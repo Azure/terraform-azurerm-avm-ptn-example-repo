@@ -1,3 +1,8 @@
+variable "address_space" {
+  type        = list(string)
+  description = "The address space that is used by the virtual network."
+}
+
 variable "location" {
   type        = string
   description = "Azure region where the resource should be deployed."
@@ -9,7 +14,6 @@ variable "name" {
   description = "The name of the this resource."
 }
 
-# This is required for most resource modules
 variable "resource_group_name" {
   type        = string
   description = "The resource group where the resources will be deployed."

@@ -51,6 +51,7 @@ resource "azurerm_resource_group" "this" {
 module "test" {
   source = "../../"
 
+  address_space = ["10.0.0.0/16"]
   # source             = "Azure/avm-<res/ptn>-<name>/azurerm"
   # ...
   location            = azurerm_resource_group.this.location
