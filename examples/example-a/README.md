@@ -30,6 +30,8 @@ provider "azurerm" {
 module "regions" {
   source  = "Azure/avm-utl-regions/azurerm"
   version = "0.9.0"
+
+  is_recommended = true
 }
 
 # This allows us to randomize the region for the resource group.
