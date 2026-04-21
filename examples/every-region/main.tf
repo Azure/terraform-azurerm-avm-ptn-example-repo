@@ -6,10 +6,6 @@ terraform {
       source  = "Azure/azapi"
       version = "~> 2.0"
     }
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.21"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.5"
@@ -17,15 +13,9 @@ terraform {
   }
 }
 
-provider "azurerm" {
-  features {}
-}
-
 module "regions" {
   source  = "Azure/avm-utl-regions/azurerm"
   version = "0.9.2"
-
-  is_recommended = true
 }
 
 locals {

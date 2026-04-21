@@ -13,10 +13,6 @@ terraform {
       source  = "Azure/azapi"
       version = "~> 2.0"
     }
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.21"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.5"
@@ -24,15 +20,9 @@ terraform {
   }
 }
 
-provider "azurerm" {
-  features {}
-}
-
 module "regions" {
   source  = "Azure/avm-utl-regions/azurerm"
   version = "0.9.2"
-
-  is_recommended = true
 }
 
 locals {
@@ -67,8 +57,6 @@ The following requirements are needed by this module:
 - <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (~> 1.5)
 
 - <a name="requirement_azapi"></a> [azapi](#requirement\_azapi) (~> 2.0)
-
-- <a name="requirement_azurerm"></a> [azurerm](#requirement\_azurerm) (~> 4.21)
 
 - <a name="requirement_random"></a> [random](#requirement\_random) (~> 3.5)
 

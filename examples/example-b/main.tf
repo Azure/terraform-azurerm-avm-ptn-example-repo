@@ -2,9 +2,9 @@ terraform {
   required_version = "~> 1.5"
 
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.21"
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.8"
     }
     random = {
       source  = "hashicorp/random"
@@ -12,11 +12,6 @@ terraform {
     }
   }
 }
-
-provider "azurerm" {
-  features {}
-}
-
 
 ## Section to provide a random Azure region for the resource group
 # This allows us to randomize the region for the resource group.
@@ -40,18 +35,23 @@ module "naming" {
   version = "0.4.2"
 }
 
+data "azapi_client_config" "current" {}
+
 # This is required for resource modules
-resource "azurerm_resource_group" "this" {
-  location = module.regions.regions[random_integer.region_index.result].name
-  name     = module.naming.resource_group.name_unique
+resource "azapi_resource" "this" {
+  location               = module.regions.regions[random_integer.region_index.result].name
+  name                   = module.naming.resource_group.name_unique
+  parent_id              = "/subscriptions/${data.azapi_client_config.current.subscription_id}"
+  type                   = "Microsoft.Resources/resourceGroups@2025-04-01"
+  response_export_values = []
 }
 
 module "test" {
   source = "../../"
 
   address_space       = ["10.0.0.0/16"]
-  location            = azurerm_resource_group.this.location
+  location            = azapi_resource.this.location
   name                = "rg-test"
-  resource_group_name = azurerm_resource_group.this.name
+  resource_group_name = azapi_resource.this.name
   enable_telemetry    = var.enable_telemetry
 }
