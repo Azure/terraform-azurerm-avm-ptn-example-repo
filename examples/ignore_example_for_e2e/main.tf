@@ -33,15 +33,11 @@ module "naming" {
   version = "0.4.2"
 }
 
-data "azapi_client_config" "current" {}
-
 # This is required for resource modules
 resource "azapi_resource" "this" {
-  location               = module.regions.regions[random_integer.region_index.result].name
-  name                   = module.naming.resource_group.name_unique
-  parent_id              = "/subscriptions/${data.azapi_client_config.current.subscription_id}"
-  type                   = "Microsoft.Resources/resourceGroups@2025-04-01"
-  response_export_values = []
+  location = module.regions.regions[random_integer.region_index.result].name
+  name     = module.naming.resource_group.name_unique
+  type     = "Microsoft.Resources/resourceGroups@2025-04-01"
 }
 
 # This is the module call
@@ -54,8 +50,8 @@ module "test" {
   address_space = ["10.0.0.0/16"]
   # source             = "Azure/avm-<res/ptn>-<name>/azurerm"
   # ...
-  location            = azapi_resource.this.location
-  name                = "TODO" # TODO update with module.naming.<RESOURCE_TYPE>.name_unique
-  resource_group_name = azapi_resource.this.name
-  enable_telemetry    = var.enable_telemetry # see variables.tf
+  location         = azapi_resource.this.location
+  name             = "TODO" # TODO update with module.naming.<RESOURCE_TYPE>.name_unique
+  parent_id        = azapi_resource.this.id
+  enable_telemetry = var.enable_telemetry # see variables.tf
 }

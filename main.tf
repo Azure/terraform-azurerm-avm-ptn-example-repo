@@ -1,13 +1,7 @@
-data "azapi_client_config" "current" {}
-
-locals {
-  resource_group_id = "/subscriptions/${data.azapi_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}"
-}
-
 resource "azapi_resource" "this" {
   location  = var.location
   name      = var.name
-  parent_id = local.resource_group_id
+  parent_id = var.parent_id
   type      = "Microsoft.Network/virtualNetworks@2025-05-01"
   body = {
     properties = {
@@ -51,7 +45,7 @@ locals {
 data "azapi_resource_list" "role_definitions" {
   for_each = local.role_definition_names
 
-  parent_id = "/subscriptions/${data.azapi_client_config.current.subscription_id}"
+  parent_id = var.parent_id
   type      = "Microsoft.Authorization/roleDefinitions@2022-04-01"
   query_parameters = {
     "$filter" = ["roleName eq '${each.value}'"]

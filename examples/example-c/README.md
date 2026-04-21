@@ -42,25 +42,21 @@ module "naming" {
   version = "0.4.2"
 }
 
-data "azapi_client_config" "current" {}
-
 # This is required for resource modules
 resource "azapi_resource" "this" {
-  location               = module.regions.regions[random_integer.region_index.result].name
-  name                   = module.naming.resource_group.name_unique
-  parent_id              = "/subscriptions/${data.azapi_client_config.current.subscription_id}"
-  type                   = "Microsoft.Resources/resourceGroups@2025-04-01"
-  response_export_values = []
+  location = module.regions.regions[random_integer.region_index.result].name
+  name     = module.naming.resource_group.name_unique
+  type     = "Microsoft.Resources/resourceGroups@2025-04-01"
 }
 
 module "test" {
   source = "../../"
 
-  address_space       = ["10.0.0.0/16"]
-  location            = azapi_resource.this.location
-  name                = "rg-test"
-  resource_group_name = azapi_resource.this.name
-  enable_telemetry    = var.enable_telemetry
+  address_space    = ["10.0.0.0/16"]
+  location         = azapi_resource.this.location
+  name             = "rg-test"
+  parent_id        = azapi_resource.this.id
+  enable_telemetry = var.enable_telemetry
 }
 ```
 
@@ -81,7 +77,6 @@ The following resources are used by this module:
 
 - [azapi_resource.this](https://registry.terraform.io/providers/Azure/azapi/latest/docs/resources/resource) (resource)
 - [random_integer.region_index](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/integer) (resource)
-- [azapi_client_config.current](https://registry.terraform.io/providers/Azure/azapi/latest/docs/data-sources/client_config) (data source)
 
 <!-- markdownlint-disable MD013 -->
 ## Required Inputs
