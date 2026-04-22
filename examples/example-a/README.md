@@ -9,9 +9,9 @@ terraform {
   required_version = "~> 1.5"
 
   required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.21"
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.8"
     }
     random = {
       source  = "hashicorp/random"
@@ -19,11 +19,6 @@ terraform {
     }
   }
 }
-
-provider "azurerm" {
-  features {}
-}
-
 
 ## Section to provide a random Azure region for the resource group
 # This allows us to randomize the region for the resource group.
@@ -48,19 +43,20 @@ module "naming" {
 }
 
 # This is required for resource modules
-resource "azurerm_resource_group" "this" {
+resource "azapi_resource" "this" {
   location = module.regions.regions[random_integer.region_index.result].name
   name     = module.naming.resource_group.name_unique
+  type     = "Microsoft.Resources/resourceGroups@2025-04-01"
 }
 
 module "test" {
   source = "../../"
 
-  address_space       = ["10.0.0.0/16"]
-  location            = azurerm_resource_group.this.location
-  name                = "rg-test"
-  resource_group_name = azurerm_resource_group.this.name
-  enable_telemetry    = var.enable_telemetry
+  address_space    = ["10.0.0.0/16"]
+  location         = azapi_resource.this.location
+  name             = "rg-test"
+  parent_id        = azapi_resource.this.id
+  enable_telemetry = var.enable_telemetry
 }
 ```
 
@@ -71,7 +67,7 @@ The following requirements are needed by this module:
 
 - <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (~> 1.5)
 
-- <a name="requirement_azurerm"></a> [azurerm](#requirement\_azurerm) (~> 4.21)
+- <a name="requirement_azapi"></a> [azapi](#requirement\_azapi) (~> 2.8)
 
 - <a name="requirement_random"></a> [random](#requirement\_random) (~> 3.5)
 
@@ -79,7 +75,7 @@ The following requirements are needed by this module:
 
 The following resources are used by this module:
 
-- [azurerm_resource_group.this](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/resource_group) (resource)
+- [azapi_resource.this](https://registry.terraform.io/providers/Azure/azapi/latest/docs/resources/resource) (resource)
 - [random_integer.region_index](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/integer) (resource)
 
 <!-- markdownlint-disable MD013 -->

@@ -14,9 +14,10 @@ variable "name" {
   description = "The name of the this resource."
 }
 
-variable "resource_group_name" {
+variable "parent_id" {
   type        = string
-  description = "The resource group where the resources will be deployed."
+  description = "The Azure Resource ID of the parent resource (typically the resource group ID) where the resource will be deployed."
+  nullable    = false
 }
 
 variable "enable_telemetry" {
