@@ -1,8 +1,0 @@
-# This file is managed by avm-terraform-governance. Do not edit manually.
-# See: https://github.com/Azure/avm-terraform-governance
-
-# Default code owners for all files in the repository.
-* @Azure/azure-verified-modules-engineering-owners
-
-# The CODEOWNERS file itself is protected to prevent unauthorized changes.
-.github/CODEOWNERS @Azure/azure-verified-modules-engineering-owners
