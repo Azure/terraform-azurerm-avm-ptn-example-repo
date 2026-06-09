@@ -38,7 +38,7 @@ resource "azapi_resource" "this" {
   location = module.regions.regions[random_integer.region_index.result].name
   name     = module.naming.resource_group.name_unique
   type     = "Microsoft.Resources/resourceGroups@2025-04-01"
-  tags     = { test = "test }
+  tags     = { test = "test" }
 }
 
 # This is the module call
