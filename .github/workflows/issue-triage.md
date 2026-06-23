@@ -119,14 +119,15 @@ Use the issue content to determine the most appropriate labels, but only apply l
 
 | Clue in issue | Suggested label(s) if present in repo |
 |---|---|
-| Unexpected behavior, error, failed `terraform apply`, broken module output | `bug` |
-| Request for a new capability, new variable, new resource support, or enhancement to the module | `feature-request` or `enhancement` |
-| Usage question, "how do I...", configuration clarification, or expected behavior question | `question` |
-| Missing docs, unclear examples, or incorrect README content | `documentation` |
-| The issue is being closed as a duplicate of an existing issue (open or closed) | `duplicate` |
-| The issue does not include enough detail to investigate | `needs-more-info` |
-| Small, well-scoped issue suitable for new contributors | `good-first-issue` |
-| Help is wanted from the community | `help-wanted` |
+| Unexpected behavior, error, failed `terraform apply`, broken module output | `Type: Bug 🐛` |
+| Request for a new capability, new variable, new resource support, or enhancement to the module | `Type: Feature Request ➕` |
+| Usage question, "how do I...", configuration clarification, or expected behavior question | `Type: Question/Feedback 🙋` |
+| Missing docs, unclear examples, or incorrect README content | `Type: Documentation 📄` |
+| The issue is a duplicate of an existing open issue | `Type: Duplicate 🤲` |
+| The issue seems to be an AVM-specific issue rather than a module bug | `Type: AVM 🅰️ ✌️ Ⓜ️` |
+| The issue is about CI/workflow/test automation rather than module behavior | `Type: CI 🚀` |
+| The issue needs more details before triage can proceed | `Needs: More Evidence ⚖️` |
+| The issue needs maintainer follow-up or review | `Needs: Triage 🔍` |
 
 **Notes on label selection:**
 
