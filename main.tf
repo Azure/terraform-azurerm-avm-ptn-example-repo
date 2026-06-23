@@ -46,10 +46,10 @@ data "azapi_resource_list" "role_definitions" {
   for_each = local.role_definition_names
 
   parent_id = var.parent_id
-  type      = "Microsoft.Authorization/roleDefinitions@2022-04-01"
   query_parameters = {
     "$filter" = ["roleName eq '${each.value}'"]
   }
+  type                   = "Microsoft.Authorization/roleDefinitions@2022-04-01"
   response_export_values = ["value"]
 }
 
