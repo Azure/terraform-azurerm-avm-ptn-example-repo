@@ -25,6 +25,7 @@ permissions:
   issues: read
   models: read
   pull-requests: read
+  copilot-requests: write
 features:
   group-concurrency-queue: false
 safe-outputs:
