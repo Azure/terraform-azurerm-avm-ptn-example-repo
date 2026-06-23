@@ -130,10 +130,6 @@ Use the issue content to determine the most appropriate labels, but only apply l
 | The issue needs more details before triage can proceed | `Needs: More Evidence ⚖️` |
 | The issue needs maintainer follow-up or review | `Needs: Triage 🔍` |
 
-**Notes on label selection:**
-
-- For feature/enhancement requests, prefer `feature-request`; use `enhancement` only if `feature-request` is not in the repository's label set.
-
 ### Critical Label Rules
 
 - Never remove labels that already exist on the issue.
