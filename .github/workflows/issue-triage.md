@@ -6,6 +6,7 @@ network:
   - defaults
   - github
   - learn.microsoft.com
+  - registry.terraform.io
 # Run on new issues, reopened issues, allow manual reruns
 "on":
   issues:
@@ -146,9 +147,9 @@ Before investigating a fix, check whether the issue has **already been resolved*
 
 Using the GitHub MCP tools on this repository:
 
-1. **Check recent releases** — List the last few recent tags/releases in the repo. Review the release notes / changelogs for mentions of the reported problem, related keywords, or the specific file/module referenced in the issue.
-2. **Check recently merged PRs** — Search for recently merged PRs (last ~30 days) in the repo that relate to the issue topic. Look at PR titles, descriptions, and changed files.
-3. **Check recent commits on the default branch** — If no release or PR match is found, check recent commits on the repository's default branch for relevant fixes that may not yet be in a release.
+1. **Check recent releases** — List the tags/releases published in the **last 6 months** in the repo. Review the release notes / changelogs for mentions of the reported problem, related keywords, or the specific file/module referenced in the issue.
+2. **Check recently merged PRs** — Search for PRs merged in the **last 6 months** in the repo that relate to the issue topic. Look at PR titles, descriptions, and changed files.
+3. **Check recent commits on the default branch** — If no release or PR match is found, check commits from the **last 6 months** on the repository's default branch for relevant fixes that may not yet be in a release.
 
 ### If a fix already exists
 
@@ -193,6 +194,8 @@ ALWAYS post **exactly one** comment on the issue using the `add-comment` safe ou
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
+> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+
 <summary of actions as bullet points>
 ```
 
@@ -200,6 +203,8 @@ If the issue has already been triaged or there is genuinely nothing to add, post
 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
+
+> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
 
 - Issue assessed, no input from GitHub agentic workflow agent.
 ```
@@ -232,6 +237,8 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
+> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+
 - **Duplicate check:** No exact duplicates found. Similar issue: #1234 (related to a similar Terraform module behavior).
 - **Labels applied:**
   - `bug` — issue reports unexpected behavior or a failed `terraform apply`
@@ -243,6 +250,8 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
+
+> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
 
 - **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context.
 - **Labels applied:**
@@ -274,3 +283,4 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 - Never create issues, PRs, or comments in other repos.
 - Be conservative with duplicate detection. False positives (wrongly closing a valid issue) are much worse than false negatives (leaving a non-duplicate open).
 - When composing your triage comment, never reproduce `@mentions` from the issue body or linked content.
+- This workflow is in **early stages** and is **AI-generated**. Always include the disclaimer line shown in Step 6 at the top of every triage comment (immediately under the heading), so issue authors know the triage is automated and may be imperfect.
