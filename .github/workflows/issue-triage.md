@@ -7,6 +7,7 @@ network:
   - github
   - learn.microsoft.com
   - registry.terraform.io
+  - terraform
 # Run on new issues, reopened issues, allow manual reruns
 "on":
   issues:
@@ -55,7 +56,7 @@ tools:
     min-integrity: none
     toolsets:
     - default
-  web-fetch: null
+  web-fetch: {}
 mcp-servers:
   microsoftdocs:
     url: "https://learn.microsoft.com/api/mcp"
