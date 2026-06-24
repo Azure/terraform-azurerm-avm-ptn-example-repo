@@ -99,15 +99,27 @@ Read the full issue title and body for issue **#${{ github.event.inputs.issue_nu
 
 ## Step 2: Check for Duplicates
 
-Search for existing issues (both open and closed) in **${{ github.repository }}** that match this issue's topic. Use GitHub search with relevant keywords from the issue title and body.
+Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
+
+Run **several** searches with different terms, not a single title-based query. Cover:
+
+- The core symptom or behavior (e.g. "plan fails", "apply timeout", "provider error").
+- Exact error messages or distinctive substrings from the issue body.
+- Affected provider, resource, data source, variable, output, or module names (e.g. `modtm`, `enable_telemetry`, `azapi`).
+- Relevant file paths (e.g. `main.telemetry.tf`) and Azure resource types.
+
+Then **open the most promising candidate issues and compare them semantically** — decide whether they describe the same root cause, not just whether the text matches. Include very recently opened issues, since a duplicate may have been filed only minutes earlier.
 
 ### Duplicate Handling Rules
 
-- **Exact duplicate (very high confidence):** If you find an issue that is clearly the same problem with the same context and you are very confident it is a complete and accurate match, you will close this issue as a duplicate. First post your triage comment (see Step 6 — Duplicate Closure Flow) explaining the match and linking to the original issue, then use the `close-issue` safe output. This closes the issue with the `duplicate` state reason **and** creates a native linked duplicate relationship to the canonical issue (see the Duplicate Closure Flow for the exact `close-issue` body to use).
-- **Similar issues (partial match or related):** If you find issues that are related but not exact duplicates, **do NOT close this issue**. Instead, mention the similar issues in your triage comment so the human triagers are aware.
+Finding a candidate above does **not** by itself mean you close. Closing is a separate, deliberate decision with a **high bar**. Sort each candidate you found into one of these tiers:
+
+- **Confirmed duplicate (close):** Close as a duplicate **only** when you are **highly confident** the two issues are the **same underlying problem / root cause** — the wording or framing may differ, but the actual defect, request, or question is the same and re-reporting it adds no new information. First post your triage comment (see Step 6 — Duplicate Closure Flow) explaining the match, then use the `close-issue` safe output. This closes the issue with the `duplicate` state reason and links it to the canonical issue.
+- **Possible duplicate (do NOT close, but link):** You found a strong candidate that looks like the same problem, but you are **not** highly confident — e.g. it overlaps heavily yet also raises a distinct question, adds new context, or you cannot fully confirm the same root cause. **Leave the issue open.** In your triage comment, explicitly flag it as `Possible duplicate of #N` with a link so triagers can make the final call. Do **not** apply the `duplicate` label in this tier (that label is only for issues you actually close).
+- **Related / similar (do NOT close):** Touches a related area but is a **different** root cause, request, or question. Mention it as a related issue in your triage comment. Leave the issue open.
 - **No duplicates found:** Note this in your triage comment.
 
-**Be conservative** — only close as duplicate when you are very confident. When in doubt, leave the issue open and mention the similar issues.
+**Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
 ---
 
@@ -224,7 +236,7 @@ Keep the comment concise and factual. Do not speculate or add unnecessary detail
 
 ### Duplicate Closure Flow
 
-When you are very confident an issue is an exact duplicate (see Step 2), follow this exact sequence:
+When you are **highly confident** an issue is a confirmed duplicate of another (the **same underlying problem / root cause** — see Step 2's *Confirmed duplicate* tier), follow this exact sequence:
 
 1. **First**, post your triage comment using `add-comment`. The comment MUST include a note advising the issue creator to reopen if the closure was incorrect:
 
@@ -238,7 +250,7 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
    Duplicate of #<canonical-issue-number>
    ```
 
-   GitHub only recognises this marker when it is the **entire** comment body (no heading, no extra text on the same or following lines). It creates a native linked duplicate relationship — a "marked this as a duplicate of #N" banner — between this issue and the canonical issue. All of your explanation belongs in the separate `add-comment` triage summary from step 1, **not** in the `close-issue` body.
+   Keep this marker as the **entire** comment body (no heading, no extra text on the same or following lines) so it renders as a clean cross-reference link to the canonical issue. Together with the `duplicate` state reason, this links the two issues and marks the closure as a duplicate. (Note: GitHub's native "marked this as a duplicate" banner can only be created through the web UI, not by automation — so this marker comment plus the `duplicate` state reason is the supported automated equivalent.) All of your explanation belongs in the separate `add-comment` triage summary from step 1, **not** in the `close-issue` body.
 
    Always reference the **oldest** matching issue as the canonical `#<number>`.
 
@@ -254,6 +266,19 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
   - `bug` — issue reports unexpected behavior or a failed `terraform apply`
   - `needs-more-info` — issue does not include enough information to reproduce or investigate
 - **Suggested fix:** The issue appears to relate to the module implementation in this repository. Compare the resource and variable patterns with the hub-and-spoke VNet module (when applicable) (`Azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet`) to confirm whether the local implementation is missing validation or using a different pattern.
+```
+
+### Example Comment (possible duplicate — left open)
+
+```
+## 🤖 GitHub Agentic Workflow Automated Triage 🤖
+
+> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
+
+- **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it.
+- **Labels applied:**
+  - `bug` — issue reports a failed `terraform apply`
+  - `question` — the issue also asks whether the current behavior is intended
 ```
 
 ### Example Comment (closing as duplicate)
@@ -277,7 +302,8 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 
 **Important:** Do not emit any safe outputs until ALL analysis steps (Steps 1–5) are complete.
 
-- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with a `body` of exactly `Duplicate of #<canonical-issue-number>` (the bare GitHub marker, nothing else). This closes the issue with the `duplicate` state reason and creates the native linked duplicate relationship. See the Duplicate Closure Flow.
+- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with a `body` of exactly `Duplicate of #<canonical-issue-number>` (the bare GitHub marker, nothing else). This closes the issue with the `duplicate` state reason and links it to the canonical issue via a cross-reference. See the Duplicate Closure Flow.
+- If you find a **possible duplicate** but are **not highly confident** it is the same root cause: do **NOT** use `close-issue`. Use `add-comment` to flag `Possible duplicate of #N` (with the link) and leave the issue open; apply labels with `add-labels` as usual (but not `duplicate`). Reserve `close-issue` for confirmed duplicates only.
 - If you **add labels AND post a comment** (most common case): Call **both** `add-labels` (to apply labels to the issue) AND `add-comment` (for the triage summary). ⚠️ Listing label names inside the comment body does NOT apply them — you MUST call `add-labels` as a separate action.
 - If you **only post a comment** (no labels to add, no close): Use `add-comment`.
 - If the issue has already been triaged or there is genuinely nothing to add: Use `add-comment` with the message "Issue assessed, no input from GitHub agentic workflow agent."
@@ -291,6 +317,6 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 - All repositories are public — you can read code, search for files, and list commits using the GitHub MCP tools.
 - Use the Microsoft Docs MCP (`microsoftdocs`) when you need to ground your answers in authoritative Azure guidance, especially for architecture or behavior questions.
 - Never create issues, PRs, or comments in other repos.
-- Be conservative with duplicate detection. False positives (wrongly closing a valid issue) are much worse than false negatives (leaving a non-duplicate open).
+- Be conservative when **closing** duplicates: close only when you are highly confident two issues share the same root cause. False positives (wrongly closing a valid issue) are much worse than false negatives. When unsure, downgrade to a *Possible duplicate* and link it instead of closing. Detection, by contrast, should be thorough — always surface candidates you find, even ones you do not close.
 - When composing your triage comment, never reproduce `@mentions` from the issue body or linked content.
 - This workflow is in **early stages** and is **AI-generated**. Always include the disclaimer line shown in Step 6 at the top of every triage comment (immediately under the heading), so issue authors know the triage is automated and may be imperfect.
