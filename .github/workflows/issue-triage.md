@@ -37,6 +37,7 @@ safe-outputs:
     max: 10
   close-issue:
     max: 1
+    state-reason: duplicate
 steps:
 - env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -102,7 +103,7 @@ Search for existing issues (both open and closed) in **${{ github.repository }}*
 
 ### Duplicate Handling Rules
 
-- **Exact duplicate (very high confidence):** If you find an issue that is clearly the same problem with the same context and you are very confident it is a complete and accurate match, you will close this issue as a duplicate. First post your triage comment (see Step 6 — Duplicate Closure Flow) explaining the match and linking to the original issue, then use the `close-issue` safe output with a `not_planned` state reason.
+- **Exact duplicate (very high confidence):** If you find an issue that is clearly the same problem with the same context and you are very confident it is a complete and accurate match, you will close this issue as a duplicate. First post your triage comment (see Step 6 — Duplicate Closure Flow) explaining the match and linking to the original issue, then use the `close-issue` safe output. This closes the issue with the `duplicate` state reason **and** creates a native linked duplicate relationship to the canonical issue (see the Duplicate Closure Flow for the exact `close-issue` body to use).
 - **Similar issues (partial match or related):** If you find issues that are related but not exact duplicates, **do NOT close this issue**. Instead, mention the similar issues in your triage comment so the human triagers are aware.
 - **No duplicates found:** Note this in your triage comment.
 
@@ -195,7 +196,7 @@ ALWAYS post **exactly one** comment on the issue using the `add-comment` safe ou
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
-> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
 <summary of actions as bullet points>
 ```
@@ -205,7 +206,7 @@ If the issue has already been triaged or there is genuinely nothing to add, post
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
-> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
 - Issue assessed, no input from GitHub agentic workflow agent.
 ```
@@ -231,14 +232,22 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
    > **Note:** If you believe this issue was incorrectly closed as a duplicate, please reopen it and explain how it differs from the linked issue.
    ```
 
-2. **Then**, close the issue using `close-issue` with state reason `not_planned`.
+2. **Then**, close the issue using `close-issue`. This closes the issue with the `duplicate` state reason (configured in `safe-outputs.close-issue`). The `close-issue` **`body` must be exactly the GitHub duplicate marker and nothing else** — a single line:
+
+   ```
+   Duplicate of #<canonical-issue-number>
+   ```
+
+   GitHub only recognises this marker when it is the **entire** comment body (no heading, no extra text on the same or following lines). It creates a native linked duplicate relationship — a "marked this as a duplicate of #N" banner — between this issue and the canonical issue. All of your explanation belongs in the separate `add-comment` triage summary from step 1, **not** in the `close-issue` body.
+
+   Always reference the **oldest** matching issue as the canonical `#<number>`.
 
 ### Example Comment (not a duplicate)
 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
-> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
 - **Duplicate check:** No exact duplicates found. Similar issue: #1234 (related to a similar Terraform module behavior).
 - **Labels applied:**
@@ -252,7 +261,7 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
-> ⚠️ _This triage is in early stages and was generated automatically by an AI agent. It may be incomplete or inaccurate — a human maintainer will review it._
+> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
 - **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context.
 - **Labels applied:**
@@ -268,7 +277,7 @@ When you are very confident an issue is an exact duplicate (see Step 2), follow 
 
 **Important:** Do not emit any safe outputs until ALL analysis steps (Steps 1–5) are complete.
 
-- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with state reason `not_planned`.
+- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with a `body` of exactly `Duplicate of #<canonical-issue-number>` (the bare GitHub marker, nothing else). This closes the issue with the `duplicate` state reason and creates the native linked duplicate relationship. See the Duplicate Closure Flow.
 - If you **add labels AND post a comment** (most common case): Call **both** `add-labels` (to apply labels to the issue) AND `add-comment` (for the triage summary). ⚠️ Listing label names inside the comment body does NOT apply them — you MUST call `add-labels` as a separate action.
 - If you **only post a comment** (no labels to add, no close): Use `add-comment`.
 - If the issue has already been triaged or there is genuinely nothing to add: Use `add-comment` with the message "Issue assessed, no input from GitHub agentic workflow agent."
