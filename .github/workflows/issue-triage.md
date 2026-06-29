@@ -121,6 +121,8 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
+**Reporting (important):** Running several searches is part of doing the job well, but it is *process*, not output. When you summarise the duplicate check in your Step 6 comment, report **only the conclusion** (no duplicates, or the specific issues found) — never list the search terms, queries, or how many searches you ran.
+
 ---
 
 ## Step 3: Suggest and Attach Labels
@@ -148,6 +150,7 @@ Use the issue content to determine the most appropriate labels, but only apply l
 ### Critical Label Rules
 
 - Never remove labels that already exist on the issue.
+- **In your triage comment, only list and justify the labels you are *adding* in this run. Do not mention, list, or re-justify labels that were already present on the issue** — the maintainer can already see those, so repeating them is noise.
 - Only add labels that already exist in the repository's label set.
 - Do not invent new labels.
 - Use the `add-labels` safe output to attach labels to the issue. Listing label names in the comment body does NOT apply them.
@@ -210,8 +213,12 @@ ALWAYS post **exactly one** comment on the issue using the `add-comment` safe ou
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
+**TL;DR:** <one or two sentences: the nature of the issue (bug / feature request / question), whether it is a duplicate, the single most important suggested action, and which labels you added>
+
 <summary of actions as bullet points>
 ```
+
+The **TL;DR** must be a one- or two-sentence *verdict* that lets a maintainer decide what to do without reading the rest of the comment. Two sentences maximum. Do **not** restate every bullet below it — it is a high-level conclusion, not a per-section summary. The detailed bullets always remain after it.
 
 If the issue has already been triaged or there is genuinely nothing to add, post:
 
@@ -225,8 +232,8 @@ If the issue has already been triaged or there is genuinely nothing to add, post
 
 The bullet points should include:
 
-- **Duplicate check result:** Whether duplicates or similar issues were found, with links to those issues. If closing as duplicate, state this clearly with the link.
-- **Labels applied:** List the labels you attached and a brief justification for each (e.g., "Applied `bug` — issue reports a failed `terraform apply`").
+- **Duplicate check result:** State only the *outcome* — either "No duplicates found" or the specific duplicate / possible-duplicate / related issues you found, with links. **Do NOT describe or list the search terms, queries, or how many searches you ran** — the maintainer only needs the conclusion. If closing as duplicate, state this clearly with the link.
+- **Labels applied:** List only the labels you **added** in this run, with a brief justification for each (e.g., "Applied `bug` — issue reports a failed `terraform apply`"). **Do NOT list or re-justify labels that were already on the issue.** If you added no new labels, say so in a single short line (do not enumerate the existing labels).
 - **No labels applied:** If no labels could be confidently determined, state this.
 - **Labels skipped:** If label definitions could not be loaded, state "Labels could not be applied due to a data loading error."
 - **Suggested fix:** If you identified a likely root cause or potential fix from investigating the source code, include it with specific file/line references. If the issue is a question or consideration rather than a bug, note that. If you could not determine a fix, state that further investigation is needed.
@@ -261,6 +268,8 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
+**TL;DR:** Looks like a real bug in the module implementation, but there isn't enough detail to reproduce it yet. Not a duplicate (similar: #1234); added `bug` and `needs-more-info`.
+
 - **Duplicate check:** No exact duplicates found. Similar issue: #1234 (related to a similar Terraform module behavior).
 - **Labels applied:**
   - `bug` — issue reports unexpected behavior or a failed `terraform apply`
@@ -275,6 +284,8 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
+**TL;DR:** Possible duplicate of #4321, but it also raises a separate question, so I left it open for a maintainer to decide. Added `bug` and `question`.
+
 - **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it.
 - **Labels applied:**
   - `bug` — issue reports a failed `terraform apply`
@@ -287,6 +298,8 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
+
+**TL;DR:** Confirmed duplicate of #5678 (same failure and error) — closing. Added `bug` and `duplicate`.
 
 - **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context.
 - **Labels applied:**
