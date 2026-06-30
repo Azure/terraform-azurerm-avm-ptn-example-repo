@@ -121,7 +121,7 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**Reporting (important):** Running several searches is part of doing the job well, but it is *process*, not output. When you summarise the duplicate check in your Step 6 comment, report **only the conclusion** (no duplicates, or the specific issues found) — never list the search terms, queries, or how many searches you ran.
+**Record what you searched.** As you run these searches, keep track of the actual queries/terms you used and the key sources you inspected (issues, source files, releases). You will list them in a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, so a maintainer can audit exactly what the agent looked at to reach its conclusions. The visible part of the comment still reports only the *outcome* of the duplicate check — the raw queries live in the accordion.
 
 ---
 
@@ -213,12 +213,22 @@ ALWAYS post **exactly one** comment on the issue using the `add-comment` safe ou
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-**TL;DR:** <one or two sentences: the nature of the issue (bug / feature request / question), whether it is a duplicate, the single most important suggested action, and which labels you added>
-
 <summary of actions as bullet points>
+
+<details>
+<summary><b>🔎 What this triage looked at</b></summary>
+
+<the search queries / terms you ran for the duplicate check, and the key sources you inspected — issues, source files, releases>
+
+</details>
 ```
 
-The **TL;DR** must be a one- or two-sentence *verdict* that lets a maintainer decide what to do without reading the rest of the comment. Two sentences maximum. Do **not** restate every bullet below it — it is a high-level conclusion, not a per-section summary. The detailed bullets always remain after it.
+The visible bullet points stay focused on conclusions; the collapsed **"What this triage looked at"** accordion is where the search-term narration goes, so a maintainer can audit the agent's process without it cluttering the comment.
+
+**Accordion rendering rules (important):**
+- The `<details>` block is **collapsed by default** — do not add the `open` attribute.
+- You **must** leave a blank line immediately after the `</summary>` line and immediately before the closing `</details>` line. Without these blank lines GitHub will not render the Markdown inside — bullet lists and code fences will come out broken.
+- List the **actual** queries you ran and sources you opened, not a generic placeholder. If you genuinely ran no searches (e.g. a pure no-op triage), omit the accordion.
 
 If the issue has already been triaged or there is genuinely nothing to add, post:
 
@@ -232,12 +242,13 @@ If the issue has already been triaged or there is genuinely nothing to add, post
 
 The bullet points should include:
 
-- **Duplicate check result:** State only the *outcome* — either "No duplicates found" or the specific duplicate / possible-duplicate / related issues you found, with links. **Do NOT describe or list the search terms, queries, or how many searches you ran** — the maintainer only needs the conclusion. If closing as duplicate, state this clearly with the link.
+- **Duplicate check result:** Whether duplicates or similar issues were found, with links to those issues. If closing as duplicate, state this clearly with the link.
 - **Labels applied:** List only the labels you **added** in this run, with a brief justification for each (e.g., "Applied `bug` — issue reports a failed `terraform apply`"). **Do NOT list or re-justify labels that were already on the issue.** If you added no new labels, say so in a single short line (do not enumerate the existing labels).
 - **No labels applied:** If no labels could be confidently determined, state this.
 - **Labels skipped:** If label definitions could not be loaded, state "Labels could not be applied due to a data loading error."
 - **Suggested fix:** If you identified a likely root cause or potential fix from investigating the source code, include it with specific file/line references. If the issue is a question or consideration rather than a bug, note that. If you could not determine a fix, state that further investigation is needed.
 - **Already fixed:** If a recent release or merged PR already addresses this issue, tell the user which version or PR contains the fix and recommend they upgrade.
+- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block listing the actual search queries/terms you ran for the duplicate check and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
 
 Keep the comment concise and factual. Do not speculate or add unnecessary detail.
 
@@ -268,13 +279,20 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-**TL;DR:** Looks like a real bug in the module implementation, but there isn't enough detail to reproduce it yet. Not a duplicate (similar: #1234); added `bug` and `needs-more-info`.
-
 - **Duplicate check:** No exact duplicates found. Similar issue: #1234 (related to a similar Terraform module behavior).
 - **Labels applied:**
   - `bug` — issue reports unexpected behavior or a failed `terraform apply`
   - `needs-more-info` — issue does not include enough information to reproduce or investigate
 - **Suggested fix:** The issue appears to relate to the module implementation in this repository. Compare the resource and variable patterns with the hub-and-spoke VNet module (when applicable) (`Azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet`) to confirm whether the local implementation is missing validation or using a different pattern.
+
+<details>
+<summary><b>🔎 What this triage looked at</b></summary>
+
+- Searched issues for: `terraform apply failed`, `validation error subnet`, `address_space not working`, and distinctive terms from the error output
+- Reviewed source: `main.tf`, `variables.tf` in this repository
+- Checked the latest release notes for a prior fix
+
+</details>
 ```
 
 ### Example Comment (possible duplicate — left open)
@@ -284,12 +302,18 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-**TL;DR:** Possible duplicate of #4321, but it also raises a separate question, so I left it open for a maintainer to decide. Added `bug` and `question`.
-
 - **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it.
 - **Labels applied:**
   - `bug` — issue reports a failed `terraform apply`
   - `question` — the issue also asks whether the current behavior is intended
+
+<details>
+<summary><b>🔎 What this triage looked at</b></summary>
+
+- Searched issues for: the exact error message, `expected behavior <feature>`, and terms from the issue title
+- Opened and compared #4321 to assess whether it is the same root cause
+
+</details>
 ```
 
 ### Example Comment (closing as duplicate)
@@ -299,14 +323,20 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-**TL;DR:** Confirmed duplicate of #5678 (same failure and error) — closing. Added `bug` and `duplicate`.
-
 - **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context.
 - **Labels applied:**
   - `bug` — issue reports a module error or failed `terraform apply`
   - `duplicate` — if this label exists in the repository label set and the issue is being closed as a duplicate
 
 > **Note:** If you believe this issue was incorrectly closed as a duplicate, please reopen it and explain how it differs from the linked issue.
+
+<details>
+<summary><b>🔎 What this triage looked at</b></summary>
+
+- Searched issues for: the error message, `<module> failure`, and terms from the issue title
+- Compared against #5678 (same error and context); confirmed #5678 is the oldest matching issue
+
+</details>
 ```
 
 ---
