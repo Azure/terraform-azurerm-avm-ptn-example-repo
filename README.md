@@ -78,6 +78,14 @@ Type: `bool`
 
 Default: `true`
 
+### <a name="input_flow_timeout_in_minutes"></a> [flow\_timeout\_in\_minutes](#input\_flow\_timeout\_in\_minutes)
+
+Description: The flow timeout in minutes for the virtual network. Valid values are between 4 and 30.
+
+Type: `number`
+
+Default: `null`
+
 ### <a name="input_lock"></a> [lock](#input\_lock)
 
 Description: Controls the Resource Lock configuration for this resource. The following properties can be specified:
