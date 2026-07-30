@@ -54,7 +54,7 @@ Type: `string`
 
 ### <a name="input_name"></a> [name](#input\_name)
 
-Description: The name of the this resource.
+Description: The name of this resource.
 
 Type: `string`
 
