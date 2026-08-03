@@ -11,7 +11,7 @@ variable "location" {
 
 variable "name" {
   type        = string
-  description = "The name of the this resource."
+  description = "The name of this resource."
 }
 
 variable "parent_id" {
