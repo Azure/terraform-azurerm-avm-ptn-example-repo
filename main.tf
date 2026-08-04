@@ -4,11 +4,15 @@ resource "azapi_resource" "this" {
   parent_id = var.parent_id
   type      = "Microsoft.Network/virtualNetworks@2025-05-01"
   body = {
-    properties = {
+    properties = merge({
       addressSpace = {
         addressPrefixes = var.address_space
       }
-    }
+      },
+      var.flow_timeout_in_minutes == null ? {} : {
+        flowTimeoutInMinutes = var.flow_timeout_in_minutes
+      }
+    )
   }
   create_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   delete_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
