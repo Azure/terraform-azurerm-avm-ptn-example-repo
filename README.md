@@ -9,6 +9,16 @@ This repository serves as a test sandbox for the Azure Verified Modules (AVM) te
 >
 > Do not depend on this module in real workloads. Use a published AVM resource or pattern module instead -- see the [AVM Terraform module index](https://azure.github.io/Azure-Verified-Modules/indexes/terraform/).
 
+## Resource locks
+
+Resource lock creation is disabled by default. Leave `lock` as `null` to deploy the virtual network without a lock, or configure a lock explicitly:
+
+```hcl
+lock = {
+  kind = "CanNotDelete"
+}
+```
+
 <!-- markdownlint-disable MD033 -->
 ## Requirements
 
