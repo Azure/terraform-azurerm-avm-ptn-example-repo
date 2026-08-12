@@ -61,6 +61,13 @@ safe-outputs:
     max: 1
     target: "*"
 steps:
+# Workaround for github/gh-aw#52327: when the installer finds a cached
+# copilot-cli within its 14-day TTL it only prepends the cache dir to PATH and
+# never writes /usr/local/bin/copilot, but the agent harness spawns that exact
+# path and fails with ENOENT. Removing the cache forces the download branch,
+# which does write /usr/local/bin/copilot. Remove once upstream is fixed.
+- name: Force Copilot CLI download (workaround github/gh-aw#52327)
+  run: sudo rm -rf /opt/hostedtoolcache/copilot-cli || true
 - env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   name: Fetch label definitions
