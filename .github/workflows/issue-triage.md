@@ -60,6 +60,14 @@ safe-outputs:
     footer: false
     max: 1
     target: "*"
+  threat-detection:
+    # Same workaround as the agent job below; custom `steps:` only inject into
+    # the agent job, so the detection job needs its own copy. A failed detection
+    # install yields conclusion=warning, which blocks every non-reviewable safe
+    # output (add-labels, set-issue-type, close-issue) under policy WTD3.
+    steps:
+    - name: Force Copilot CLI download (workaround github/gh-aw#52327)
+      run: sudo rm -rf /opt/hostedtoolcache/copilot-cli || true
 steps:
 # Workaround for github/gh-aw#52327: when the installer finds a cached
 # copilot-cli within its 14-day TTL it only prepends the cache dir to PATH and
@@ -645,7 +653,7 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 ## Step 3: Set the Issue Type and Attach Labels
 
-The repository label definitions are available at `/tmp/gh-aw/agent/repo-labels.json`. If this file is missing or unreadable, skip label application and note in your triage comment that "Labels could not be applied due to a data loading error."
+The repository label definitions are available at `/tmp/gh-aw/agent/repo-labels.json`. **Read this file before emitting any label, and copy each `name` value verbatim** — see Critical Label Rules below. If this file is missing or unreadable, skip label application and note in your triage comment that "Labels could not be applied due to a data loading error."
 
 ### Set the GitHub Issue Type
 
@@ -663,20 +671,24 @@ Analyse the issue content and attach the most appropriate labels from the reposi
 
 Use the issue content to determine the most appropriate labels, but only apply labels that exist in the repository's label set.
 
-| Clue in issue | Suggested label(s) if present in repo |
+The `name` values below are illustrative. Match on the *concept*, then emit the label name exactly as it appears in `repo-labels.json`.
+
+| Clue in issue | Concept to match in the repo label set |
 |---|---|
-| Unexpected behavior, error, failed `terraform apply`, broken module output | `Type: Bug 🐛` |
-| Request for a new capability, new variable, new resource support, or enhancement to the module | `Type: Feature Request ➕` |
-| Usage question, "how do I...", configuration clarification, or expected behavior question | `Type: Question/Feedback 🙋` |
-| Missing docs, unclear examples, or incorrect README content | `Type: Documentation 📄` |
-| The issue is a duplicate of an existing open issue | `Type: Duplicate 🤲` |
-| The issue seems to be an AVM-specific issue rather than a module bug | `Type: AVM 🅰️ ✌️ Ⓜ️` |
-| The issue is about CI/workflow/test automation rather than module behavior | `Type: CI 🚀` |
-| The issue needs more details before triage can proceed | `Needs: More Evidence ⚖️` |
-| The issue needs maintainer follow-up or review | `Needs: Triage 🔍` |
+| Unexpected behavior, error, failed `terraform apply`, broken module output | the "Type: Bug" label |
+| Request for a new capability, new variable, new resource support, or enhancement to the module | the "Type: Feature Request" label |
+| Usage question, "how do I...", configuration clarification, or expected behavior question | the "Type: Question/Feedback" label |
+| Missing docs, unclear examples, or incorrect README content | the "Type: Documentation" label |
+| The issue is a duplicate of an existing open issue | the "Type: Duplicate" label |
+| The issue seems to be an AVM-specific issue rather than a module bug | the "Type: AVM" label |
+| The issue is about CI/workflow/test automation rather than module behavior | the "Type: CI" label |
+| The issue needs more details before triage can proceed | the "Needs: More Evidence" label |
+| The issue needs maintainer follow-up or review | the "Needs: Triage" label |
 
 ### Critical Label Rules
 
+- **`repo-labels.json` is the only authoritative source of label names. Copy the `name` field byte-for-byte.** Label names in this repository embed literal emoji shortcodes such as `:heavy_plus_sign:`. Never render a shortcode into a Unicode emoji, never re-order or re-space a name, and never reconstruct a name from memory or from the table above. `Type: Feature Request ➕` is *not* the same label as `Type: Feature Request :heavy_plus_sign:` and will be rejected.
+- **`add-labels` is atomic: if any one name in the batch does not exist, the entire batch is discarded** and the issue receives no labels at all. Verify every name against `repo-labels.json` before emitting.
 - Never remove labels that already exist on the issue.
 - **In your triage comment, only list and justify the labels you are *adding* in this run. Do not mention, list, or re-justify labels that were already present on the issue** — the maintainer can already see those, so repeating them is noise.
 - Only add labels that already exist in the repository's label set.
@@ -829,7 +841,7 @@ Once you have identified what the issue is about, attempt to investigate the roo
 
 **Do not emit any safe outputs until ALL analysis steps (Steps 1–5) are complete.**
 
-ALWAYS post **exactly one new** comment on the issue using the `add-comment` safe output, even if no triage actions were taken. On a manual rerun, reassess the issue from scratch instead of trusting the previous triage result. Before posting the new result, the `add-comment` handler marks older comments from this same `issue-triage` workflow as outdated and minimizes them. It identifies workflow-owned comments using their hidden `gh-aw-workflow-id` metadata, so human comments and comments from other workflows are not affected. The comment must follow this exact format:
+ALWAYS post **exactly one new** comment on the issue using the `add-comment` safe output, even if no triage actions were taken. **This comment is mandatory and is the primary deliverable of this workflow — a run that emits `add-labels` or `set-issue-type` without also emitting `add-comment` is a failed run.** Emit `add-comment` even when the issue is spam, invalid, unintelligible, a duplicate, or when you took no other action. On a manual rerun, reassess the issue from scratch instead of trusting the previous triage result. Before posting the new result, the `add-comment` handler marks older comments from this same `issue-triage` workflow as outdated and minimizes them. It identifies workflow-owned comments using their hidden `gh-aw-workflow-id` metadata, so human comments and comments from other workflows are not affected. The comment must follow this exact format:
 
 ```
 ## 🤖 GitHub Agentic Workflow Automated Triage 🤖
