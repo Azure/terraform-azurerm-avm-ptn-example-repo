@@ -40,6 +40,12 @@ safe-outputs:
   add-labels:
     max: 10
     target: "*"
+    # Opt out of issue-intent metadata (ADR-46207 flipped this default to on).
+    # When enabled, labels are sent via the GraphQL `update_issue_suggestions`
+    # path, where GitHub records anything below HIGH confidence as a suggestion
+    # instead of applying it — while gh-aw still logs "Successfully added N
+    # labels". Forcing the REST path applies every label the agent selects.
+    issue-intent: false
   set-issue-type:
     allowed:
     - Bug
@@ -47,6 +53,7 @@ safe-outputs:
     - Task
     max: 1
     target: "*"
+    issue-intent: false
   close-issue:
     max: 1
     target: "*"
@@ -159,6 +166,7 @@ steps:
           errors:[$error],
           candidate_count:0,
           open_inventory_count:0,
+          merged_inventory_count:0,
           required_inspection_count:0,
           required_inspection_numbers:[],
           exact_required_inspection_count:0,
@@ -246,6 +254,7 @@ steps:
               pageInfo { hasNextPage }
               nodes { path }
             }
+            mergedAt
           }
         }
       }
@@ -254,13 +263,27 @@ steps:
     OWNER_NAME="${REPO%%/*}"
     REPO_NAME="${REPO##*/}"
     PR_SCAN_RAW="${WORK_DIR}/pr-scan.jsonl"
+    # Recently merged PRs are inventoried alongside open ones so an issue that was
+    # already fixed on the default branch can be recognised even when nothing in
+    # the issue references the fixing PR. Bounded by age and count to keep the
+    # candidate set reviewable on long-lived repositories.
+    MERGED_CUTOFF="$(date -u -d '180 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '1970-01-01T00:00:00Z')"
     if gh api graphql --paginate -F query="@${GRAPHQL_QUERY}" -f owner="${OWNER_NAME}" -f repo="${REPO_NAME}" > "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}"; then
-      jq -c -s --arg num "${NUM}" --arg repo "${REPO}" '
+      jq -c -s --arg num "${NUM}" --arg repo "${REPO}" --arg cutoff "${MERGED_CUTOFF}" '
         ("#" + $num + "\\b") as $numRef
         | ($repo + "#" + $num + "\\b") as $qualRef
         | ("(?i)\\b(refs?|fixes?|closes?|resolves?)\\b[[:space:]]*#" + $num + "\\b") as $bodyRef
-        | [.[].data.repository.pullRequests.nodes[]?]
-        | .[]
+        | [.[].data.repository.pullRequests.nodes[]?] as $prs
+        | (
+            [$prs[] | select((.merged == true) and ((.mergedAt // "") >= $cutoff))]
+            | sort_by(.mergedAt) | reverse | .[0:25]
+            | .[]
+            | {number:.number, title:.title, url:.url, state:.state, draft:.isDraft, merged:.merged, body:(.body // ""),
+               source:"merged_pr_inventory", detail:"Recently merged PR; screen for a fix that already shipped on the default branch",
+               file_names:[.files.nodes[]?.path], files_truncated:(.files.pageInfo.hasNextPage // false)}
+          ),
+          (
+          $prs[]
         | . as $pr
         | (
             (if $pr.state == "OPEN" then
@@ -290,6 +313,7 @@ steps:
             ]
           )
           | .[]
+          )
       ' "${PR_SCAN_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "graphql pr scan: jq processing failed for issue #${NUM}"
       TRUNCATED_COMMITS=$(jq -s '[.[].data.repository.pullRequests.nodes[]? | select(.commits.pageInfo.hasNextPage == true)] | length' "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}") \
         || { TRUNCATED_COMMITS=1; record_error "graphql pr scan: jq commit-pagination check failed"; }
@@ -454,6 +478,7 @@ steps:
                   or (($candidate.file_names // []) | length > 12)
                 ),
                 open_inventory: (($candidate.sources | index("open_pr_inventory")) != null),
+                merged_inventory: (($candidate.sources | index("merged_pr_inventory")) != null),
                 lexical_relevance: {
                   version: 1,
                   score: $score,
@@ -480,6 +505,7 @@ steps:
           errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
           candidate_count: ($candidates[0] | length),
           open_inventory_count: ([$candidates[0][] | select(.sources | index("open_pr_inventory"))] | length),
+          merged_inventory_count: ([$candidates[0][] | select(.sources | index("merged_pr_inventory"))] | length),
           required_inspection_count: ([$candidates[0][] | select(is_required)] | length),
           required_inspection_numbers: ([$candidates[0][] | select(is_required) | .number] | unique | sort),
           required_inspection: [
@@ -503,8 +529,9 @@ steps:
       and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $expected)
       and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $expected)
       and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == .open_inventory_count)
-      and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory"))))
-      and (all(.open_inventory_screening[]; (.sources == ["open_pr_inventory"])))
+      and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == .merged_inventory_count)
+      and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory"))))
+      and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory"))))
       and (all(.required_inspection[], .open_inventory_screening[];
         (.body_excerpt | length) <= 280 and (.file_names | length) <= 12
       ))
@@ -539,6 +566,7 @@ steps:
         | (numbers_with(["commit_body_refs","commit_message_reference"])) as $commit
         | (($exact + $timeline + $commit) | unique | sort) as $required
         | (numbers_with(["open_pr_inventory"])) as $inventory
+        | (numbers_with(["merged_pr_inventory"])) as $merged_inventory
         | {
             issue_number: ($issue | tonumber),
             repository: $repo,
@@ -548,6 +576,7 @@ steps:
             errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
             candidate_count: ($candidates[0] | length),
             open_inventory_count: ($inventory | length),
+            merged_inventory_count: ($merged_inventory | length),
             required_inspection_count: ($required | length),
             required_inspection_numbers: $required,
             exact_required_inspection_count: ($exact | length),
@@ -636,6 +665,10 @@ Run **several** searches with different terms, not a single title-based query. C
 
 Then **open the most promising candidate issues and compare them semantically** — decide whether they describe the same root cause, not just whether the text matches. Include very recently opened issues, since a duplicate may have been filed only minutes earlier.
 
+**Search across framing, not just across wording.** The same gap is routinely filed twice: once as a bug describing the *symptom* ("the module overwrites my lock notes on every apply") and once as a feature request describing the *remedy* ("allow setting custom lock notes"). Those two share almost no vocabulary, so symptom-only searches will miss the pair. Once you have formed a view of the root cause in Step 5 terms — the specific variable, attribute, resource, or hardcoded value at fault — run at least one further search using **the vocabulary of the fix** (the variable or attribute that would need to be added or changed), and treat a bug-vs-feature framing difference as irrelevant when deciding whether two issues are the same underlying problem. When the earlier issue is the feature request and the new one is the bug report, the feature request is normally the canonical issue.
+
+**Prefer the oldest live issue as canonical.** When several existing issues describe the same problem, link the earliest one that is still the active tracker, not simply the most recent match you happened to find. If a newer issue has superseded an older one (for example the older was closed and re-raised), say so and link the tracker that is actually open.
+
 ### Duplicate Handling Rules
 
 Finding a candidate above does **not** by itself mean you close. Closing is a separate, deliberate decision with a **high bar**. Sort each candidate you found into one of these tiers:
@@ -713,17 +746,17 @@ A pre-agent step has already fetched authoritative PR candidate evidence and wri
 **Use the status and index direct paths before doing anything else in Step 4.** Run these direct-path checks exactly (additional candidate-specific `jq` selectors are allowed):
 
 ```bash
-jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' /tmp/gh-aw/agent/pr-candidate-status.json
-jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources == ["open_pr_inventory"]) and .open_inventory == true)) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' /tmp/gh-aw/agent/pr-candidate-screening-index.json
-jq '{loaded,complete,success,errors,candidate_count,open_inventory_count,required_inspection_count,required_inspection_numbers,exact_required_inspection_count,exact_required_inspection_numbers,timeline_required_inspection_count,timeline_required_inspection_numbers,commit_required_inspection_count,commit_required_inspection_numbers,screening_index_path,index_version}' /tmp/gh-aw/agent/pr-candidate-status.json
-jq '{candidate_count,open_inventory_count,required_inspection_count,required_inspection_numbers,inventory_only_count:(.open_inventory_screening | length),plausible_numbers:[(.required_inspection + .open_inventory_screening)[] | select(.open_inventory and .lexical_relevance.plausible) | .number]}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
-jq '.required_inspection[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
-jq '.open_inventory_screening[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.merged_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.merged_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' /tmp/gh-aw/agent/pr-candidate-status.json
+jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == $index.merged_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory")) and (.open_inventory or .merged_inventory))) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.merged_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq '{loaded,complete,success,errors,candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,exact_required_inspection_count,exact_required_inspection_numbers,timeline_required_inspection_count,timeline_required_inspection_numbers,commit_required_inspection_count,commit_required_inspection_numbers,screening_index_path,index_version}' /tmp/gh-aw/agent/pr-candidate-status.json
+jq '{candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,inventory_only_count:(.open_inventory_screening | length),plausible_numbers:[(.required_inspection + .open_inventory_screening)[] | select((.open_inventory or .merged_inventory) and .lexical_relevance.plausible) | .number]}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq '.required_inspection[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq '.open_inventory_screening[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 ```
 
 Never `cat`, concatenate, or print the complete evidence JSON to establish status or enumerate candidates. Never combine JSON files into one parser input. Parse each direct path independently; if source details are needed, query the evidence file for one candidate number and only the needed fields. Never parse a copied terminal/UI capture or a displayed/truncated rendering. **Visible output ending early is not evidence of truncation or failure.** Report a parser or API error only when a direct-path `jq` parse actually fails or the status contract/API error fields say it failed.
 
-Compare the two directly parsed summaries: `candidate_count`, `open_inventory_count`, `required_inspection_count`, and `required_inspection_numbers` must match between status and index. A disagreement is a count/inventory invariant failure.
+Compare the two directly parsed summaries: `candidate_count`, `open_inventory_count`, `merged_inventory_count`, `required_inspection_count`, and `required_inspection_numbers` must match between status and index. A disagreement is a count/inventory invariant failure.
 
 The file is produced by fixed `gh api`/GraphQL calls (not the model), so it deterministically covers, across **all PR states with no date limit**:
 
@@ -731,17 +764,18 @@ The file is produced by fixed `gh api`/GraphQL calls (not the model), so it dete
 - Exact `#<issue-number>` and repository-qualified (`owner/repo#<issue-number>`) matches in PR titles (`issue_number_search_title`), bodies (`issue_number_search_body`), and PR/issue comments (`issue_number_search_comment`).
 - Commits whose message contains `#<issue-number>` or a qualified ref, mapped back to their associated PR — tagged `commit_body_refs` when the commit message uses a `Refs #<issue-number>` / `Fixes #<issue-number>` / `Closes #<issue-number>` / `Resolves #<issue-number>` style line, or `commit_message_reference` for any other mention. This is the only reliable way to catch a reference that lives in a commit body of an **open, unmerged** PR rather than in the PR's own title/body — those commits are not on the default branch and GitHub's commit search does not fully index commit bodies, so this cannot be found by ad-hoc searching alone.
 - A paginated inventory of **every currently open PR** (`open_pr_inventory`). The screening index bounds each body excerpt to 280 characters and each filename list to 12 entries, with an explicit truncation flag.
+- An inventory of the **25 most recently merged PRs from the last 180 days** (`merged_pr_inventory`), bounded the same way. This is what lets you recognise that an issue was already fixed on the default branch when nothing in the issue references the fixing PR. A merged PR only enters `required_inspection` when the issue references it; otherwise it is inventory you must still screen.
 
-Every candidate appears exactly once in the screening index: candidates carrying any exact, timeline, or commit source are in `required_inspection`; inventory-only candidates are in `open_inventory_screening`. An open required candidate has `open_inventory: true`, so it counts toward both required inspection and open-inventory screening without being duplicated between arrays.
+Every candidate appears exactly once in the screening index: candidates carrying any exact, timeline, or commit source are in `required_inspection`; inventory-only candidates are in `open_inventory_screening`. An open required candidate has `open_inventory: true` (and a merged one `merged_inventory: true`), so it counts toward both required inspection and inventory screening without being duplicated between arrays.
 
 The index also supplies deterministic lexical discovery signals. It normalizes nontrivial issue/PR title, body, and filename identifiers, removes common/template words, singularizes simple plurals, and scores bounded overlaps with fixed weights. `lexical_relevance.plausible: true` makes full inspection mandatory, but neither that boolean nor its score proves relevance, a fix, or a shared root cause.
 
 Complete **both phases**, never skipping or sampling:
 
 1. **Required-inspection phase:** Fully inspect every PR in `required_inspection`, including its real diff, complete changed-file list, commits, tests/checks, status, base branch, and review discussion. Exact references, timeline links, and commit mentions are candidates, never proof.
-2. **Open-inventory screening phase:** Screen every open inventory candidate. Required candidates with `open_inventory: true` are screened by their mandatory full inspection; screen every entry in `open_inventory_screening` from its compact title/body/file signals. Fully inspect the real PR/diff for every entry marked lexically plausible and every additional candidate that your judgment finds plausible. Record inventory-only entries found irrelevant as screened without loading full diffs.
+2. **Inventory screening phase:** Screen every inventory candidate, open and merged. Required candidates with `open_inventory: true` or `merged_inventory: true` are screened by their mandatory full inspection; screen every entry in `open_inventory_screening` from its compact title/body/file signals. Fully inspect the real PR/diff for every entry marked lexically plausible and every additional candidate that your judgment finds plausible. Record inventory-only entries found irrelevant as screened without loading full diffs. When the reported behavior does not reproduce against current default-branch source, treat `merged_pr_inventory` as the primary place to look for the change that fixed it, and name that PR rather than concluding only that it was "possibly fixed earlier".
 
-Track `inventory_count` from status, `screened_count`, the plausible candidate numbers, and the fully inspected candidate numbers. `screened_count` must equal `open_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link.
+Track `inventory_count` from status, `screened_count`, the plausible candidate numbers, and the fully inspected candidate numbers. `screened_count` must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link.
 
 If either status/index file is missing, unreadable, malformed, fails either direct `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or non-empty `errors`, or if any count/inspection invariant mismatches, see **Incomplete or Failed Evidence Load or Screening** below.
 
