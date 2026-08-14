@@ -57,9 +57,12 @@ safe-outputs:
   close-issue:
     max: 1
     target: "*"
-    state-reason: duplicate
-  update-issue:
-    status:
+    # List form lets the agent pick the reason per closure. A scalar would lock
+    # every closure to one reason, which recorded fix-confirmed closures as
+    # "duplicate". The first entry is the fallback when the agent omits one.
+    state-reason:
+    - duplicate
+    - completed
   update-pull-request:
     title: false
     body: true
@@ -612,7 +615,7 @@ You are an AI agent that performs initial triage on newly created or reopened is
 This repository contains the Terraform code for a single Azure Verified Module (AVM) module. The issue, the labels, the releases, and the code to investigate are all in this repository.
 
 > **Target issue for this run: #${{ github.event.inputs.issue_number || github.event.issue.number }}**
-> Always use this number as `item_number` in issue safe output calls (`add-comment`, `add-labels`, `close-issue`, `update-issue`). Use it as `issue_number` for `set-issue-type`. When updating a pull request, use its number as `pull_request_number`.
+> Always use this number as `item_number` in issue safe output calls (`add-comment`, `add-labels`, `close-issue`). Use it as `issue_number` for `set-issue-type`. When updating a pull request, use its number as `pull_request_number`.
 
 ## Your Task
 
@@ -642,7 +645,7 @@ Read the full issue title and body for issue **#${{ github.event.inputs.issue_nu
 If the state history and earlier workflow comments show that this agentic triage workflow previously closed the issue, and a person subsequently reopened it, treat that reopen as an explicit request for human review. Confirm the workflow closure by correlating a prior triage comment that says the workflow is closing the issue with the subsequent close event by the workflow actor; do not attribute another automation's closure to this workflow.
 
 - Set a **human-reopened-after-agent-closure** flag for the rest of the run.
-- Never call `close-issue` or use `update-issue` to set the status to closed for this issue again. This veto applies to both duplicate and completed closures and to manual reruns because the reopen remains in the issue timeline.
+- Never call `close-issue` for this issue again, with any `state_reason`. This veto applies to both duplicate and completed closures and to manual reruns because the reopen remains in the issue timeline.
 - Continue the full analysis. You may add labels, refresh the triage comment, and append `Fixes #<issue-number>` to a confirmed-fix PR when appropriate.
 - In the triage comment, state that automated closure was skipped because the issue was reopened after an earlier agent closure and should remain open for a human maintainer.
 
@@ -656,18 +659,20 @@ If the history file is missing, unreadable, or has `loaded: false`, do not perfo
 
 Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
 
-Run **several** searches with different terms, not a single title-based query. Cover:
+**Use `search_issues`.** `search_repositories` searches for repositories, not issues, and cannot answer this question.
 
-- The core symptom or behavior (e.g. "plan fails", "apply timeout", "provider error").
-- Exact error messages or distinctive substrings from the issue body.
-- Affected provider, resource, data source, variable, output, or module names (e.g. `modtm`, `enable_telemetry`, `azapi`).
-- Relevant file paths (e.g. `main.telemetry.tf`) and Azure resource types.
+**How to build queries.** GitHub ANDs every term, so each extra word can only shrink the result set. Keep each query to **two or three broad terms** and run **several separate queries** rather than one precise query. Prefer the words that would appear in *any* report of this problem — the affected input, resource, or behaviour — and leave out qualifiers, verbs, and framing words. For example, prefer `whitespace name` over `trim leading whitespace vnet name`.
+
+Run at least four separate searches, covering:
+
+- The core symptom or behaviour (e.g. `plan fails`, `apply timeout`, `provider error`).
+- A distinctive substring of any error message, on its own.
+- The affected provider, resource, variable, output, or module name (e.g. `modtm`, `enable_telemetry`, `azapi`).
+- **The vocabulary of the fix**, as its own query — never appended to a symptom query. The same gap is routinely filed twice: once as a bug describing the *symptom* ("the module overwrites my lock notes on every apply") and once as a feature request describing the *remedy* ("allow setting custom lock notes"). These share almost no wording, so only a separate remedy-worded search will find the pair. A bug-vs-feature framing difference is irrelevant to whether two issues are the same underlying problem.
 
 Then **open the most promising candidate issues and compare them semantically** — decide whether they describe the same root cause, not just whether the text matches. Include very recently opened issues, since a duplicate may have been filed only minutes earlier.
 
-**Search across framing, not just across wording.** The same gap is routinely filed twice: once as a bug describing the *symptom* ("the module overwrites my lock notes on every apply") and once as a feature request describing the *remedy* ("allow setting custom lock notes"). Those two share almost no vocabulary, so symptom-only searches will miss the pair. Once you have formed a view of the root cause in Step 5 terms — the specific variable, attribute, resource, or hardcoded value at fault — run at least one further search using **the vocabulary of the fix** (the variable or attribute that would need to be added or changed), and treat a bug-vs-feature framing difference as irrelevant when deciding whether two issues are the same underlying problem. When the earlier issue is the feature request and the new one is the bug report, the feature request is normally the canonical issue.
-
-**Prefer the oldest live issue as canonical.** When several existing issues describe the same problem, link the earliest one that is still the active tracker, not simply the most recent match you happened to find. If a newer issue has superseded an older one (for example the older was closed and re-raised), say so and link the tracker that is actually open.
+**Choosing the canonical issue.** Collect every match you judge to be the same underlying problem, then list them as `#<number>` with state and creation date, sorted by number ascending. The canonical issue is the **lowest-numbered one that is still open**. Only if every match is closed do you fall back to the lowest-numbered closed one. Do not link the match you happened to find first, and do not link a newer issue while an older open one tracks the same problem.
 
 ### Duplicate Handling Rules
 
@@ -680,7 +685,7 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**Record what you searched.** As you run these searches, keep track of the actual queries/terms you used and the key sources you inspected (issues, source files, releases). You will list them in a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, so a maintainer can audit exactly what the agent looked at to reach its conclusions. The visible part of the comment still reports only the *outcome* of the duplicate check — the raw queries live in the accordion.
+**Record what you searched, and only what you searched.** Keep track of the queries you actually issued and the sources you actually opened (issues, source files, releases). List them verbatim in a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, each with the issue numbers it returned, so a maintainer can audit how you reached your conclusion. Never describe a search you did not run, and never summarise your searching in general terms — write the literal query strings. If you were unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
 
 ---
 
@@ -843,7 +848,7 @@ Close the issue as `completed` only when the fix is **confirmed**, the Human Reo
 - The fixing commit is present on the default branch and there is strong direct evidence that it resolves the issue.
 - A published release explicitly contains the validated fix.
 
-Before closing, post the Step 6 triage comment identifying the PR, commit, and release when available. If released, recommend the first fixed version. If merged but unreleased, state that the fix is on the default branch and will be available in a future release. Then use `update-issue` with `status: closed`; this produces a completed closure.
+Before closing, post the Step 6 triage comment identifying the PR, commit, and release when available. If released, recommend the first fixed version. If merged but unreleased, state that the fix is on the default branch and will be available in a future release. Then use `close-issue` with `state_reason: completed`, naming the fixing PR in the body. Do not set `duplicate_of` on a fix-confirmed closure — that reason is only for duplicates.
 
 Do **not** close for an open or draft PR, an unmerged branch, a merely likely match, a partial fix, conflicting evidence, or a fix whose default-branch inclusion cannot be verified. When uncertain, leave the issue open and explain what a maintainer should verify.
 
@@ -943,9 +948,9 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
    Duplicate of #<canonical-issue-number>
    ```
 
-   The `close-issue` handler is configured with the `duplicate` state reason. All explanation belongs in the separate `add-comment` triage summary.
+   The `close-issue` handler accepts a per-closure `state_reason`. Always set `state_reason: duplicate` here, and set `duplicate_of` to the canonical issue number so GitHub records the native duplicate link. All explanation belongs in the separate `add-comment` triage summary.
 
-   Always reference the **oldest** matching issue as the canonical `#<number>`.
+   Always reference the canonical issue chosen by the Step 2 rule — the lowest-numbered match that is still open.
 
 ### Example Comment (not a duplicate)
 
@@ -1020,9 +1025,11 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 **Important:** Do not emit any safe outputs until ALL analysis steps (Steps 1–5) are complete.
 
-- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with a body of exactly `Duplicate of #<canonical-issue-number>`. The handler applies the `duplicate` state reason. See the Duplicate Closure Flow.
-- If you **close the issue** because it is conclusively fixed: Use `add-comment` for the triage summary **first**, then use `update-issue` with `status: closed`. This is the completed-closure path.
-- If the **Human Reopen Override** is active: Never use `close-issue` or use `update-issue` to set `status: closed`, regardless of duplicate or fix confidence. Continue with any non-closing outputs and explain the veto in the triage comment.
+**Every issue safe output in this run must carry the target issue number** — `item_number: ${{ github.event.inputs.issue_number || github.event.issue.number }}` for `add-comment`, `add-labels`, and `close-issue`, and `issue_number: ${{ github.event.inputs.issue_number || github.event.issue.number }}` for `set-issue-type`. Manual reruns have no issue in the event context, so a call that omits the number is rejected with "No issue/PR number available" and the label or type is silently lost.
+
+- If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with `state_reason: duplicate`, `duplicate_of: <canonical-issue-number>`, and a body of exactly `Duplicate of #<canonical-issue-number>`. See the Duplicate Closure Flow.
+- If you **close the issue** because it is conclusively fixed: Use `add-comment` for the triage summary **first**, then use `close-issue` with `state_reason: completed` and a body naming the fixing PR. Do not set `duplicate_of` on this path.
+- If the **Human Reopen Override** is active: Never use `close-issue`, regardless of duplicate or fix confidence. Continue with any non-closing outputs and explain the veto in the triage comment.
 - If you find an unlinked **confirmed-fix PR**: Use `update-pull-request` with `pull_request_number`, `operation: append`, and a body of exactly `Fixes #<issue-number>`. Do not update likely or merely related candidates.
 - Use `set-issue-type` with `issue_number` and exactly one of `Bug`, `Feature`, or `Task` when the issue's current type does not match its primary intent.
 - If you find a **possible duplicate** but are **not highly confident** it is the same root cause: do **NOT** use `close-issue`. Use `add-comment` to flag `Possible duplicate of #N` (with the link) and leave the issue open; apply labels with `add-labels` as usual (but not `duplicate`). Reserve `close-issue` for confirmed duplicates only.
