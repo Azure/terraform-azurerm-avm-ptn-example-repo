@@ -949,7 +949,7 @@ If the file is missing, unreadable, malformed, fails the `jq -e` check, reports 
 
 ### Additional Searching
 
-The prefetched queries are mechanical. Add your own, using `search_issues` — `search_repositories` searches for repositories, not issues, and cannot answer this question.
+The prefetched queries are mechanical. Add your own, using `search_issues` — `search_repositories` searches for repositories, not issues, and cannot answer this question. Anything you turn up this way is reported as a **finding** — the issue number and why it matches — never as a description of the query that found it; see *The search record is the index file* below.
 
 Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
 
@@ -976,13 +976,14 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**Record what you searched, and only what you searched.** The audit trail comes from the index file, not from memory. In a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, list:
+**The search record is the index file, not your memory.** In a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, list:
 
 1. **Prefetched duplicate searches** — every entry of `.queries[]`, quoting `.query` verbatim and listing the issue numbers in its `.numbers` array. Copy these from the file; do not retype them from memory and do not omit ones that returned nothing.
-2. **Additional searches I ran** — only the queries you personally issued this run, each with the issue numbers it returned, listed separately from the prefetched set.
-3. The other sources you actually opened (issues, source files, releases).
+2. The other sources you actually opened (issues, source files, releases), identified by issue number or file path.
 
-Never describe a search you did not run, never merge the two lists, and never summarise your searching in general terms. If the index failed to load and you were also unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
+**Do not list, name, or describe queries you ran yourself.** The prefetched list is the complete search record published to maintainers, because it is the only one backed by a file they can check. If your own searching surfaced a candidate the prefetch missed, report it as a finding in the visible bullets — the issue number and why it matches — never as a description of the search that found it. Report what you found, not what you did.
+
+If the index failed to load and you were also unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
 
 ---
 
@@ -1190,17 +1191,17 @@ ALWAYS post **exactly one new** comment on the issue using the `add-comment` saf
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-<the search queries / terms you ran for the duplicate check, and the key sources you inspected — issues, source files, releases>
+<the prefetched duplicate queries copied from issue-candidate-index.json with the issue numbers each returned, and the key sources you opened — issues, source files, releases>
 
 </details>
 ```
 
-The visible bullet points stay focused on conclusions; the collapsed **"What this triage looked at"** accordion is where the search-term narration goes, so a maintainer can audit the agent's process without it cluttering the comment.
+The visible bullet points stay focused on conclusions; the collapsed **"What this triage looked at"** accordion is where the prefetched query list and the sources you opened go, so a maintainer can audit coverage without it cluttering the comment.
 
 **Accordion rendering rules (important):**
 - The `<details>` block is **collapsed by default** — do not add the `open` attribute.
 - You **must** leave a blank line immediately after the `</summary>` line and immediately before the closing `</details>` line. Without these blank lines GitHub will not render the Markdown inside — bullet lists and code fences will come out broken.
-- List the **actual** queries you ran and sources you opened, not a generic placeholder. If you genuinely ran no searches (e.g. a pure no-op triage), omit the accordion.
+- Copy the prefetched queries from the index file and list the sources you actually opened, not a generic placeholder. If the index did not load and you opened no sources (e.g. a pure no-op triage), omit the accordion.
 
 If the issue has already been triaged, do not skip analysis. Publish the current result after completing Steps 1-5. Only when there is genuinely nothing actionable to report, post:
 
@@ -1226,7 +1227,7 @@ The bullet points should include:
 - **PR-evidence and screening status:** Report `candidate_count`, `inventory_count`, `screened_count`, `required_inspection_count`, the plausible candidate numbers, and the fully inspected candidate numbers from the two phases. State whether the direct status/index parses and all count/inspection invariants succeeded. If not, identify the actual direct parse/API/status/count/inspection failure and state that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening), while noting that duplicate-closure decisions were not affected. Never report truncation based on display length.
 - **Closure:** If closing an issue that is conclusively fixed, state the evidence supporting closure and whether the fix is released or only present on the default branch. Include a note advising the author to reopen with evidence if the problem persists.
 - **Human reopen override:** If this workflow previously closed the issue and a person later reopened it, state that the issue will remain open for human review even if the agent found a duplicate or an existing fix.
-- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block listing the actual search queries/terms you ran for the duplicate check, the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`), and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
+- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block listing the prefetched duplicate queries copied from `issue-candidate-index.json`, the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`), and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
 
 Keep the comment concise and factual. Do not speculate or add unnecessary detail.
 
@@ -1266,7 +1267,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Searched issues for: `terraform apply failed`, `validation error subnet`, `address_space not working`, and distinctive terms from the error output
+- Prefetched duplicate searches (from `issue-candidate-index.json`): `apply failed` → #101, #145; `validation subnet` → #145; `address_space error` → no results
 - Reviewed source: `main.tf`, `variables.tf` in this repository
 - Checked the latest release notes for a prior fix
 
@@ -1288,7 +1289,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Searched issues for: the exact error message, `expected behavior <feature>`, and terms from the issue title
+- Prefetched duplicate searches (from `issue-candidate-index.json`): `subnet validation` → #4321; `expected behavior` → #4321, #4102; `address prefix` → no results
 - Opened and compared #4321 to assess whether it is the same root cause
 
 </details>
@@ -1311,7 +1312,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Searched issues for: the error message, `<module> failure`, and terms from the issue title
+- Prefetched duplicate searches (from `issue-candidate-index.json`): `module failure` → #5678, #5012; `apply error` → #5678; `provider timeout` → no results
 - Compared against #5678 (same error and context); confirmed #5678 is the oldest matching issue
 
 </details>
