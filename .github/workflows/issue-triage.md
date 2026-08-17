@@ -414,6 +414,10 @@ steps:
           ascii_downcase
           | gsub("[^a-z0-9_]+"; " ")
           | split(" ")
+          # Keep snake_case compounds whole and also emit their parts, so prose
+          # terms ("role assignment") can match identifiers ("role_assignments").
+          | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+          | flatten
           | map(select(length >= 4))
           | map(
               if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
@@ -437,6 +441,13 @@ steps:
           | unique;
         def overlap($left; $right):
           [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
+        # Filenames that appear in nearly every AVM PR carry no discovery signal.
+        def ubiquitous_file_tokens:
+          [
+            "changelog","example","footer","header","input","integration","license",
+            "locals","output","provider","readme","terraform","test","tftest","tfvars",
+            "unit","variable"
+          ];
         def has_source($names): any(.sources[]?; . as $source | ($names | index($source)) != null);
         def is_required:
           has_source([
@@ -459,12 +470,18 @@ steps:
             | overlap($issue_body_tokens; $pr_title_tokens) as $body_title
             | overlap($issue_body_tokens; $pr_body_tokens) as $body_body
             | overlap(($issue_title_tokens + $issue_body_tokens | unique); $pr_file_tokens) as $file_matches
+            | overlap($issue_title_tokens; $pr_file_tokens) as $title_file
+            | (
+                $title_file
+                | map(. as $token | select((ubiquitous_file_tokens | index($token)) == null))
+              ) as $title_file_distinct
             | (
                 (($title_title | length) * 5)
                 + (($title_body | length) * 3)
                 + (($body_title | length) * 2)
                 + ([($body_body | length), 4] | min)
                 + (($file_matches | length) * 2)
+                + (($title_file_distinct | length) * 3)
               ) as $score
             | {
                 number: $candidate.number,
@@ -488,13 +505,15 @@ steps:
                   plausible: (
                     ($score >= 15)
                     or (($title_title | length) >= 3)
+                    or (($title_file_distinct | length) >= 2)
                   ),
                   signals: {
                     issue_title_to_pr_title: $title_title[0:10],
                     issue_title_to_pr_body: $title_body[0:10],
                     issue_body_to_pr_title: $body_title[0:10],
                     issue_body_to_pr_body: $body_body[0:10],
-                    issue_identifiers_to_file_names: $file_matches[0:10]
+                    issue_identifiers_to_file_names: $file_matches[0:10],
+                    issue_title_to_file_names: $title_file_distinct[0:10]
                   }
                 }
               };
@@ -595,6 +614,252 @@ steps:
       ' > "${STATUS_FILE}"
     echo "PR candidate prefetch: candidates=${CANDIDATE_COUNT}, status=${STATUS_FILE}, index=${INDEX_FILE}, complete=${COMPLETE}"
     rm -rf "${WORK_DIR}"
+- name: Prefetch duplicate issue candidates for target issue
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+  run: |
+    set -o pipefail
+    mkdir -p /tmp/gh-aw/agent
+    INDEX_FILE=/tmp/gh-aw/agent/issue-candidate-index.json
+    INDEX_VERSION=1
+    REPO="${GH_AW_GITHUB_REPOSITORY}"
+    NUM="${ISSUE_NUMBER}"
+    write_failure_index() {
+      jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "$1" --argjson version "${INDEX_VERSION}" \
+        '{
+          version:$version,
+          issue_number:($issue | tonumber? // $issue),
+          repository:$repo,
+          loaded:false,
+          complete:false,
+          success:false,
+          errors:[$error],
+          query_count:0,
+          queries:[],
+          candidate_count:0,
+          open_candidate_count:0,
+          
+          candidates:[]
+        }' > "${INDEX_FILE}"
+    }
+    if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+      || ! printf '%s' "${NUM}" | grep -Eq '^[1-9][0-9]*$'; then
+      write_failure_index "invalid repository or issue number"
+      exit 0
+    fi
+    WORK_DIR=$(mktemp -d)
+    ERRORS_FILE="${WORK_DIR}/errors.txt"
+    RESULTS_JSONL="${WORK_DIR}/results.jsonl"
+    QUERIES_JSONL="${WORK_DIR}/queries.jsonl"
+    QUERY_LIST="${WORK_DIR}/queries.txt"
+    : > "${ERRORS_FILE}"
+    : > "${RESULTS_JSONL}"
+    : > "${QUERIES_JSONL}"
+    : > "${QUERY_LIST}"
+    COMPLETE=true
+    # Conservative fallback written up front, matching the PR prefetch contract.
+    write_failure_index "duplicate prefetch step did not finish"
+    record_error() {
+      echo "$1" >> "${ERRORS_FILE}"
+      COMPLETE=false
+    }
+    ISSUE_RAW="${WORK_DIR}/issue.json"
+    if ! gh api "repos/${REPO}/issues/${NUM}" > "${ISSUE_RAW}" 2>>"${ERRORS_FILE}"; then
+      echo '{"title":"","body":""}' > "${ISSUE_RAW}"
+      record_error "issue metadata: gh api fetch failed for issue #${NUM}"
+    fi
+    # Derive search terms from the issue title with the same tokenizer the PR
+    # screening index uses: GitHub ANDs every term, so emit short broad pairs
+    # rather than one long precise query. The remedy-worded variants exist
+    # because the same gap is filed twice, once as a symptom and once as a
+    # feature request, and those two share almost no vocabulary.
+    jq -r '
+      def tokens:
+        ascii_downcase
+        | gsub("[^a-z0-9_]+"; " ")
+        | split(" ")
+        | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+        | flatten
+        | map(select(length >= 4))
+        | map(
+            if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
+            then .[0:-1]
+            else .
+            end
+          )
+        | . as $tokens
+        | [
+            "about","above","across","after","again","against","already","also","although","always",
+            "among","another","appear","applied","apply","available","because","before","being","below",
+            "between","body","branch","change","changes","check","checked","clear","code","configuration",
+            "continue","correlation","could","current","default","description","details","during","each",
+            "error","example","existing","fails","from","github","have","having","include","issue","later",
+            "main","make","module","more","need","needed","other","passes","please","provider","request",
+            "resource","should","state","still","than","that","their","then","there","these","they","this",
+            "through","type","update","using","value","version","when","where","which","while","with","would"
+          ] as $stop
+        | $tokens
+        | map(. as $token | select(($stop | index($token)) == null))
+        | unique;
+      ((.title // "") | tokens | sort_by(- length) | .[0:4]) as $top
+      | (
+          if ($top | length) >= 2
+          then [range(0; $top | length) as $i | range($i + 1; $top | length) as $j | ($top[$i] + " " + $top[$j])]
+          else $top
+          end
+        ) as $pairs
+      | (
+          $pairs
+          + (
+              if ($top | length) > 0
+              then [($top[0] + " allow"), ($top[0] + " support"), ($top[0] + " custom")]
+              else []
+              end
+            )
+        )
+      | unique
+      | .[]
+    ' "${ISSUE_RAW}" 2>>"${ERRORS_FILE}" | tr -d '\r' > "${QUERY_LIST}" || record_error "query derivation: jq processing failed"
+    QUERY_COUNT=0
+    while IFS= read -r QUERY_TERMS; do
+      if [ -z "${QUERY_TERMS}" ]; then
+        continue
+      fi
+      QUERY_COUNT=$((QUERY_COUNT + 1))
+      RESPONSE="${WORK_DIR}/search-${QUERY_COUNT}.json"
+      if gh api -X GET search/issues \
+        -f q="repo:${REPO} is:issue ${QUERY_TERMS}" \
+        -f per_page=30 > "${RESPONSE}" 2>>"${ERRORS_FILE}"; then
+        jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
+          {
+            query: $query,
+            total_count: (.total_count // 0),
+            numbers: [.items[]? | select(.pull_request == null) | select(.number != $target) | .number] | unique | sort
+          }
+        ' "${RESPONSE}" >> "${QUERIES_JSONL}" 2>>"${ERRORS_FILE}" \
+          || record_error "search: jq summary failed for query [${QUERY_TERMS}]"
+        jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
+          .items[]?
+          | select(.pull_request == null)
+          | select(.number != $target)
+          | {
+              number: .number,
+              title: (.title // ""),
+              url: .html_url,
+              state: (.state // "unknown"),
+              created_at: (.created_at // ""),
+              body_excerpt: ((.body // "")[0:280]),
+              query: $query
+            }
+        ' "${RESPONSE}" >> "${RESULTS_JSONL}" 2>>"${ERRORS_FILE}" \
+          || record_error "search: jq extraction failed for query [${QUERY_TERMS}]"
+      else
+        record_error "search: gh api failed for query [${QUERY_TERMS}]"
+      fi
+      sleep 2
+    done < "${QUERY_LIST}"
+    jq -s -c '.' "${RESULTS_JSONL}" > "${WORK_DIR}/results.json" 2>>"${ERRORS_FILE}" \
+      || { echo '[]' > "${WORK_DIR}/results.json"; record_error "aggregation: results slurp failed"; }
+    jq -s -c '.' "${QUERIES_JSONL}" > "${WORK_DIR}/queries.json" 2>>"${ERRORS_FILE}" \
+      || { echo '[]' > "${WORK_DIR}/queries.json"; record_error "aggregation: queries slurp failed"; }
+    jq -n \
+      --arg issue "${NUM}" \
+      --arg repo "${REPO}" \
+      --argjson complete "${COMPLETE}" \
+      --argjson version "${INDEX_VERSION}" \
+      --argjson query_count "${QUERY_COUNT}" \
+      --slurpfile issue_data "${ISSUE_RAW}" \
+      --slurpfile results "${WORK_DIR}/results.json" \
+      --slurpfile queries "${WORK_DIR}/queries.json" \
+      --rawfile errorlog "${ERRORS_FILE}" \
+      '
+        def tokens:
+          ascii_downcase
+          | gsub("[^a-z0-9_]+"; " ")
+          | split(" ")
+          | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+          | flatten
+          | map(select(length >= 4))
+          | map(
+              if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
+              then .[0:-1]
+              else .
+              end
+            )
+          | . as $tokens
+          | [
+              "about","above","across","after","again","against","already","also","although","always",
+              "among","another","appear","applied","apply","available","because","before","being","below",
+              "between","body","branch","change","changes","check","checked","clear","code","configuration",
+              "continue","correlation","could","current","default","description","details","during","each",
+              "error","example","existing","fails","from","github","have","having","include","issue","later",
+              "main","make","module","more","need","needed","other","passes","please","provider","request",
+              "resource","should","state","still","than","that","their","then","there","these","they","this",
+              "through","type","update","using","value","version","when","where","which","while","with","would"
+            ] as $stop
+          | $tokens
+          | map(. as $token | select(($stop | index($token)) == null))
+          | unique;
+        def overlap($left; $right):
+          [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
+        (($issue_data[0].title // "") | tokens) as $issue_title_tokens
+        | (($issue_data[0].body // "") | tokens) as $issue_body_tokens
+        | (
+            $results[0]
+            | group_by(.number)
+            | map(
+                .[0] as $first
+                | ($first.title | tokens) as $cand_title_tokens
+                | ($first.body_excerpt | tokens) as $cand_body_tokens
+                | overlap($issue_title_tokens; $cand_title_tokens) as $title_title
+                | overlap($issue_title_tokens; $cand_body_tokens) as $title_body
+                | overlap($issue_body_tokens; $cand_title_tokens) as $body_title
+                | (
+                    (($title_title | length) * 5)
+                    + (($title_body | length) * 3)
+                    + (($body_title | length) * 2)
+                  ) as $score
+                | {
+                    number: $first.number,
+                    title: $first.title,
+                    url: $first.url,
+                    state: $first.state,
+                    created_at: $first.created_at,
+                    body_excerpt: $first.body_excerpt,
+                    matched_queries: ([.[].query] | unique | sort),
+                    lexical_relevance: {
+                      version: 1,
+                      score: $score,
+                      signals: {
+                        issue_title_to_candidate_title: $title_title[0:10],
+                        issue_title_to_candidate_body: $title_body[0:10],
+                        issue_body_to_candidate_title: $body_title[0:10]
+                      }
+                    }
+                  }
+              )
+            | sort_by(.number)
+          ) as $candidates
+        | ([$candidates[] | select(.state == "open") | .number] | sort) as $open_numbers
+        | {
+            version: $version,
+            issue_number: ($issue | tonumber),
+            repository: $repo,
+            loaded: true,
+            complete: $complete,
+            success: $complete,
+            errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
+            query_count: $query_count,
+            queries: $queries[0],
+            candidate_count: ($candidates | length),
+            open_candidate_count: ($open_numbers | length),
+            candidates: $candidates
+          }
+      ' > "${INDEX_FILE}"
+    echo "Duplicate candidate prefetch: queries=${QUERY_COUNT}, index=${INDEX_FILE}, complete=${COMPLETE}"
+    rm -rf "${WORK_DIR}"
 tools:
   cache-memory: true
   github:
@@ -653,26 +918,52 @@ Do not activate this override merely because the issue is currently in the `reop
 
 If the history file is missing, unreadable, or has `loaded: false`, do not perform any automated closure in this run because you cannot safely rule out a prior human reopen. Continue the analysis and state in the triage comment that closure was skipped because issue state history could not be verified.
 
+### Prior Triage Comments Are Not Evidence
+
+Earlier triage comments on this issue — including ones you wrote in previous runs — record what was true **when they were written**, not what is true now. A fix may have merged since.
+
+- Use them only for state history (above) and to avoid repeating identical advice verbatim.
+- **Never restate a factual claim from an earlier comment about repository contents** — which files, tests, examples, variables, or fixes exist — without re-verifying it against the current default branch **in this run**. A claim that something is missing is the one most likely to have gone stale.
+- **Never cite agreement between previous runs as support.** Repeated output is one observation, not several; a stale claim repeats perfectly. Phrases like "previous runs reached the same conclusion" are not evidence and must not appear in your comment.
+- If you cannot re-verify an inherited claim this run, drop it rather than repeat it.
+
 ---
 
 ## Step 2: Check for Duplicates
 
-Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
+### Deterministic Duplicate Candidate Contract (read this first)
 
-**Use `search_issues`.** `search_repositories` searches for repositories, not issues, and cannot answer this question.
+A pre-agent step has already issued a fixed set of issue searches and written `/tmp/gh-aw/agent/issue-candidate-index.json`. Read it **before** searching yourself. Run these direct-path checks exactly:
+
+```bash
+jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.query_count | type == "number") and (.queries | type == "array") and (.candidate_count | type == "number") and (.candidates | type == "array") and (.open_candidate_count | type == "number") and (.query_count == (.queries | length)) and (.candidate_count == (.candidates | length)) and (.open_candidate_count == ([.candidates[] | select(.state == "open")] | length)) and ([.candidates[].number] | unique | length) == .candidate_count and (all(.queries[]; (.query | type == "string") and (.numbers | type == "array"))) and (all(.candidates[]; (.number | type == "number") and (.title | type == "string") and (.state | type == "string") and (.created_at | type == "string") and (.url | type == "string") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.matched_queries | type == "array") and (.matched_queries | length > 0) and (.lexical_relevance.score | type == "number") and (.lexical_relevance.signals | type == "object")))' /tmp/gh-aw/agent/issue-candidate-index.json
+jq '{query_count,candidate_count,open_candidate_count,queries:[.queries[] | {query,total_count,matched:(.numbers | length)}]}' /tmp/gh-aw/agent/issue-candidate-index.json
+jq '.candidates[] | {number,title,state,created_at,url,body_excerpt,matched_queries,lexical_relevance}' /tmp/gh-aw/agent/issue-candidate-index.json
+```
+
+The queries are derived from the issue title by a fixed tokenizer, not by the model: it takes the four most distinctive title terms, issues every pair of them, and adds remedy-worded variants of the strongest term (`allow`, `support`, `custom`) so a feature-request framing of the same gap is reachable. This is a **floor, not a ceiling** — it cannot know the issue's error text, and it cannot paraphrase.
+
+**Screen every entry in `.candidates`** and open the promising ones. `lexical_relevance.score` orders your reading; it does not decide anything and does not prove a shared root cause.
+
+If the file is missing, unreadable, malformed, fails the `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or a non-empty `errors` array, then say in your triage comment that the deterministic duplicate search could not be loaded, run your own searches, and **do not close this issue as a duplicate in this run**.
+
+### Additional Searching
+
+The prefetched queries are mechanical. Add your own, using `search_issues` — `search_repositories` searches for repositories, not issues, and cannot answer this question.
+
+Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
 
 **How to build queries.** GitHub ANDs every term, so each extra word can only shrink the result set. Keep each query to **two or three broad terms** and run **several separate queries** rather than one precise query. Prefer the words that would appear in *any* report of this problem — the affected input, resource, or behaviour — and leave out qualifiers, verbs, and framing words. For example, prefer `whitespace name` over `trim leading whitespace vnet name`.
 
-Run at least four separate searches, covering:
+Cover what the prefetch structurally cannot:
 
-- The core symptom or behaviour (e.g. `plan fails`, `apply timeout`, `provider error`).
-- A distinctive substring of any error message, on its own.
+- A distinctive substring of any **error message**, on its own.
 - The affected provider, resource, variable, output, or module name (e.g. `modtm`, `enable_telemetry`, `azapi`).
 - **The vocabulary of the fix**, as its own query — never appended to a symptom query. The same gap is routinely filed twice: once as a bug describing the *symptom* ("the module overwrites my lock notes on every apply") and once as a feature request describing the *remedy* ("allow setting custom lock notes"). These share almost no wording, so only a separate remedy-worded search will find the pair. A bug-vs-feature framing difference is irrelevant to whether two issues are the same underlying problem.
 
 Then **open the most promising candidate issues and compare them semantically** — decide whether they describe the same root cause, not just whether the text matches. Include very recently opened issues, since a duplicate may have been filed only minutes earlier.
 
-**Choosing the canonical issue.** Collect every match you judge to be the same underlying problem, then list them as `#<number>` with state and creation date, sorted by number ascending. The canonical issue is the **lowest-numbered one that is still open**. Only if every match is closed do you fall back to the lowest-numbered closed one. Do not link the match you happened to find first, and do not link a newer issue while an older open one tracks the same problem.
+**Choosing the canonical issue.** Collect every match you judge to be the same underlying problem, then list them as `#<number>` with state and creation date, sorted by number ascending. The canonical issue is the **lowest-numbered one that is still open**. Note that this is computed over the matches *you judged to be duplicates*, never over the raw prefetched candidate list — a search hit is not a duplicate. Only if every match is closed do you fall back to the lowest-numbered closed one. Do not link the match you happened to find first, and do not link a newer issue while an older open one tracks the same problem.
 
 ### Duplicate Handling Rules
 
@@ -685,7 +976,13 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**Record what you searched, and only what you searched.** Keep track of the queries you actually issued and the sources you actually opened (issues, source files, releases). List them verbatim in a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, each with the issue numbers it returned, so a maintainer can audit how you reached your conclusion. Never describe a search you did not run, and never summarise your searching in general terms — write the literal query strings. If you were unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
+**Record what you searched, and only what you searched.** The audit trail comes from the index file, not from memory. In a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, list:
+
+1. **Prefetched duplicate searches** — every entry of `.queries[]`, quoting `.query` verbatim and listing the issue numbers in its `.numbers` array. Copy these from the file; do not retype them from memory and do not omit ones that returned nothing.
+2. **Additional searches I ran** — only the queries you personally issued this run, each with the issue numbers it returned, listed separately from the prefetched set.
+3. The other sources you actually opened (issues, source files, releases).
+
+Never describe a search you did not run, never merge the two lists, and never summarise your searching in general terms. If the index failed to load and you were also unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
 
 ---
 
@@ -860,6 +1157,7 @@ Once you have identified what the issue is about, attempt to investigate the roo
 
 ### Investigation Guidelines
 
+- **This repository is checked out locally at `$GITHUB_WORKSPACE` on the default branch.** Reading it with shell tools (`ls`, `cat`, `rg`, `find`) is the fastest and most reliable way to establish what the current source actually contains, and it is the required way to check whether a file, test, example, variable, or output exists. Never state that something is absent from the repository without listing the relevant directory in this run — an inherited or assumed absence is the most common way this triage publishes a false claim.
 - Use the GitHub MCP tools to read files, search code, and list commits in this repository.
 - Look for the specific module, file, variable, output, example, or resource referenced in the issue.
 - For Terraform module issues, inspect the module implementation, variables, outputs, examples, and tests.
