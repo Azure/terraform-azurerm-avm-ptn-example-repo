@@ -49,6 +49,11 @@ run "uses_a_fully_qualified_role_definition_id_verbatim" {
     condition     = length(local.role_definition_names) == 0
     error_message = "A fully qualified role definition ID must not trigger a role definition name lookup."
   }
+
+  assert {
+    condition     = azapi_resource.role_assignment["reader"].type == var.resource_types.authorization_role_assignments
+    error_message = "Role assignments must use the configured resource type."
+  }
 }
 
 run "omits_optional_role_assignment_properties_when_unset" {
@@ -86,6 +91,7 @@ run "forwards_optional_role_assignment_properties_when_set" {
         principal_type             = "ServicePrincipal"
         condition                  = "@Resource[Microsoft.Network/virtualNetworks] StringEquals 'x'"
         condition_version          = "2.0"
+        name                       = "33333333-3333-3333-3333-333333333333"
       }
     }
   }
@@ -103,6 +109,11 @@ run "forwards_optional_role_assignment_properties_when_set" {
   assert {
     condition     = azapi_resource.role_assignment["contributor"].body.properties.conditionVersion == "2.0"
     error_message = "A supplied condition version must be forwarded to the role assignment."
+  }
+
+  assert {
+    condition     = azapi_resource.role_assignment["contributor"].name == "33333333-3333-3333-3333-333333333333"
+    error_message = "A supplied role assignment name must override the generated UUID."
   }
 }
 

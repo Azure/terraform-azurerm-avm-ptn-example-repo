@@ -2,7 +2,7 @@ resource "azapi_resource" "this" {
   location  = var.location
   name      = var.name
   parent_id = var.parent_id
-  type      = "Microsoft.Network/virtualNetworks@2025-05-01"
+  type      = var.resource_types.network_virtual_networks
   body = {
     properties = {
       addressSpace = {
@@ -12,10 +12,22 @@ resource "azapi_resource" "this" {
   }
   create_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   delete_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+  ignore_body_changes    = length(var.ignore_body_changes.network_virtual_networks) > 0 ? var.ignore_body_changes.network_virtual_networks : null
   read_headers           = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   response_export_values = []
+  retry                  = var.retry
   tags                   = var.tags
   update_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+
+  dynamic "timeouts" {
+    for_each = var.timeouts == null ? [] : [var.timeouts]
+    content {
+      create = timeouts.value.create
+      read   = timeouts.value.read
+      update = timeouts.value.update
+      delete = timeouts.value.delete
+    }
+  }
 }
 
 resource "azapi_resource" "lock" {
@@ -23,18 +35,30 @@ resource "azapi_resource" "lock" {
 
   name      = coalesce(var.lock.name, "lock-${var.lock.kind}")
   parent_id = azapi_resource.this.id
-  type      = "Microsoft.Authorization/locks@2020-05-01"
+  type      = var.resource_types.authorization_locks
   body = {
     properties = {
       level = var.lock.kind
-      notes = var.lock.kind == "CanNotDelete" ? "Cannot delete the resource or its child resources." : "Cannot delete or modify the resource or its child resources."
+      notes = coalesce(var.lock.notes, var.lock.kind == "CanNotDelete" ? "Cannot delete the resource or its child resources." : "Cannot delete or modify the resource or its child resources.")
     }
   }
   create_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   delete_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+  ignore_body_changes    = length(var.ignore_body_changes.authorization_locks) > 0 ? var.ignore_body_changes.authorization_locks : null
   read_headers           = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   response_export_values = []
+  retry                  = var.retry
   update_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+
+  dynamic "timeouts" {
+    for_each = var.timeouts == null ? [] : [var.timeouts]
+    content {
+      create = timeouts.value.create
+      read   = timeouts.value.read
+      update = timeouts.value.update
+      delete = timeouts.value.delete
+    }
+  }
 }
 
 locals {
@@ -63,13 +87,13 @@ locals {
 resource "azapi_resource" "role_assignment" {
   for_each = var.role_assignments
 
-  name = uuidv5("dns", join("|", [
+  name = coalesce(each.value.name, uuidv5("dns", join("|", [
     azapi_resource.this.id,
     each.value.principal_id,
     each.value.role_definition_id_or_name,
-  ]))
+  ])))
   parent_id = azapi_resource.this.id
-  type      = "Microsoft.Authorization/roleAssignments@2022-04-01"
+  type      = var.resource_types.authorization_role_assignments
   body = {
     properties = merge(
       {
@@ -85,7 +109,19 @@ resource "azapi_resource" "role_assignment" {
   }
   create_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   delete_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+  ignore_body_changes    = length(var.ignore_body_changes.authorization_role_assignments) > 0 ? var.ignore_body_changes.authorization_role_assignments : null
   read_headers           = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
   response_export_values = []
+  retry                  = var.retry
   update_headers         = var.enable_telemetry ? { "User-Agent" : local.avm_azapi_header } : null
+
+  dynamic "timeouts" {
+    for_each = var.timeouts == null ? [] : [var.timeouts]
+    content {
+      create = timeouts.value.create
+      read   = timeouts.value.read
+      update = timeouts.value.update
+      delete = timeouts.value.delete
+    }
+  }
 }
