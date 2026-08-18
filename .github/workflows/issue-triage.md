@@ -860,6 +860,48 @@ steps:
       ' > "${INDEX_FILE}"
     echo "Duplicate candidate prefetch: queries=${QUERY_COUNT}, index=${INDEX_FILE}, complete=${COMPLETE}"
     rm -rf "${WORK_DIR}"
+- name: Render the duplicate-search audit block
+  run: |
+    set -o pipefail
+    mkdir -p /tmp/gh-aw/agent
+    INDEX_FILE=/tmp/gh-aw/agent/issue-candidate-index.json
+    AUDIT_FILE=/tmp/gh-aw/agent/triage-audit-block.md
+    FALLBACK='- Prefetched duplicate searches: the deterministic duplicate index did not load, so no prefetched search record is available for this run.'
+    write_fallback() {
+      printf '%s\n' "${FALLBACK}" > "${AUDIT_FILE}"
+      echo "Audit block: ${1}; wrote fallback line"
+    }
+    if [ ! -s "${INDEX_FILE}" ]; then
+      write_fallback "index file missing or empty"
+      exit 0
+    fi
+    if ! jq -e '(.loaded == true) and (.complete == true) and ((.queries | type) == "array") and ((.queries | length) > 0)' "${INDEX_FILE}" > /dev/null 2>&1; then
+      write_fallback "index incomplete or has no queries"
+      exit 0
+    fi
+    if ! jq -r '
+        ["- Prefetched duplicate searches (from `issue-candidate-index.json`):"]
+        + (
+            .queries
+            | map(
+                "  - `" + (.query // "") + "` → "
+                + (
+                    if (((.numbers // []) | length) == 0) then "no results"
+                    else ((.numbers // []) | map("#" + (. | tostring)) | join(", "))
+                    end
+                  )
+              )
+          )
+        | .[]
+      ' "${INDEX_FILE}" > "${AUDIT_FILE}"; then
+      write_fallback "render failed"
+      exit 0
+    fi
+    if [ ! -s "${AUDIT_FILE}" ]; then
+      write_fallback "render produced no output"
+      exit 0
+    fi
+    echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
 tools:
   cache-memory: true
   github:
@@ -949,7 +991,7 @@ If the file is missing, unreadable, malformed, fails the `jq -e` check, reports 
 
 ### Additional Searching
 
-The prefetched queries are mechanical. Add your own, using `search_issues` — `search_repositories` searches for repositories, not issues, and cannot answer this question. Anything you turn up this way is reported as a **finding** — the issue number and why it matches — never as a description of the query that found it; see *The search record is the index file* below.
+The prefetched queries are mechanical. Add your own, using `search_issues` — `search_repositories` searches for repositories, not issues, and cannot answer this question. Anything you turn up this way is reported as a **finding** — the issue number and why it matches — never as a description of the query that found it; see *The search record is rendered for you* below.
 
 Search **${{ github.repository }}** for existing issues (both open and closed) that report the **same underlying problem**, even if they are worded differently. Reworded or paraphrased reports are still duplicates — do not rely on title or keyword overlap alone.
 
@@ -976,12 +1018,12 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**The search record is the index file, not your memory.** In a collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment, list:
+**The search record is rendered for you; do not write it yourself.** A step that ran before you rendered the duplicate-search audit trail to `/tmp/gh-aw/agent/triage-audit-block.md`. In the collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment:
 
-1. **Prefetched duplicate searches** — every entry of `.queries[]`, quoting `.query` verbatim and listing the issue numbers in its `.numbers` array. Copy these from the file; do not retype them from memory and do not omit ones that returned nothing.
-2. The other sources you actually opened (issues, source files, releases), identified by issue number or file path.
+1. Read that file (`cat /tmp/gh-aw/agent/triage-audit-block.md`) and paste its contents **verbatim** as the opening lines of the accordion. Do not reformat it, re-order it, collapse its lines together, shorten an issue list, or re-derive any part of it from `issue-candidate-index.json`. It is already correct; any difference between that file and your comment is a defect, and issue numbers in particular must appear exactly as rendered.
+2. Below the pasted block, list the other sources you actually opened (issues, source files, releases), identified by issue number or file path.
 
-**Do not list, name, or describe queries you ran yourself.** The prefetched list is the complete search record published to maintainers, because it is the only one backed by a file they can check. If your own searching surfaced a candidate the prefetch missed, report it as a finding in the visible bullets — the issue number and why it matches — never as a description of the search that found it. Report what you found, not what you did.
+**Never describe your own searching, anywhere in the comment.** Do not name a query you ran, and do not state that you ran, re-ran, repeated, or supplemented any search — not in the accordion, and not in the visible bullets. The pasted block is the entire published search record, because it is the only part backed by a file a maintainer can check. If your own searching surfaced a candidate the prefetch missed, report it as a finding in the visible bullets — the issue number and why it matches — never as a description of the search that found it. Report what you found, not what you did.
 
 If the index failed to load and you were also unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
 
@@ -1078,7 +1120,7 @@ Complete **both phases**, never skipping or sampling:
 1. **Required-inspection phase:** Fully inspect every PR in `required_inspection`, including its real diff, complete changed-file list, commits, tests/checks, status, base branch, and review discussion. Exact references, timeline links, and commit mentions are candidates, never proof.
 2. **Inventory screening phase:** Screen every inventory candidate, open and merged. Required candidates with `open_inventory: true` or `merged_inventory: true` are screened by their mandatory full inspection; screen every entry in `open_inventory_screening` from its compact title/body/file signals. Fully inspect the real PR/diff for every entry marked lexically plausible and every additional candidate that your judgment finds plausible. Record inventory-only entries found irrelevant as screened without loading full diffs. When the reported behavior does not reproduce against current default-branch source, treat `merged_pr_inventory` as the primary place to look for the change that fixed it, and name that PR rather than concluding only that it was "possibly fixed earlier".
 
-Track `inventory_count` from status, `screened_count`, the plausible candidate numbers, and the fully inspected candidate numbers. `screened_count` must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link.
+Track `open_inventory_count` and `merged_inventory_count` from status, the plausible candidate numbers, and the fully inspected candidate numbers. Your screened total must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link.
 
 If either status/index file is missing, unreadable, malformed, fails either direct `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or non-empty `errors`, or if any count/inspection invariant mismatches, see **Incomplete or Failed Evidence Load or Screening** below.
 
@@ -1191,7 +1233,7 @@ ALWAYS post **exactly one new** comment on the issue using the `add-comment` saf
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-<the prefetched duplicate queries copied from issue-candidate-index.json with the issue numbers each returned, and the key sources you opened — issues, source files, releases>
+<paste the contents of /tmp/gh-aw/agent/triage-audit-block.md verbatim here, then list the key sources you opened — issues, source files, releases>
 
 </details>
 ```
@@ -1201,7 +1243,7 @@ The visible bullet points stay focused on conclusions; the collapsed **"What thi
 **Accordion rendering rules (important):**
 - The `<details>` block is **collapsed by default** — do not add the `open` attribute.
 - You **must** leave a blank line immediately after the `</summary>` line and immediately before the closing `</details>` line. Without these blank lines GitHub will not render the Markdown inside — bullet lists and code fences will come out broken.
-- Copy the prefetched queries from the index file and list the sources you actually opened, not a generic placeholder. If the index did not load and you opened no sources (e.g. a pure no-op triage), omit the accordion.
+- Paste the rendered audit block verbatim, then list the sources you actually opened, not a generic placeholder. If the index did not load and you opened no sources (e.g. a pure no-op triage), omit the accordion.
 
 If the issue has already been triaged, do not skip analysis. Publish the current result after completing Steps 1-5. Only when there is genuinely nothing actionable to report, post:
 
@@ -1224,10 +1266,10 @@ The bullet points should include:
 - **Already fixed:** If a recent release or merged PR already addresses this issue, tell the user which version or PR contains the fix and recommend they upgrade.
 - **PR linked:** If you appended `Fixes #<issue-number>` to a confirmed-fix PR, identify the PR and state that it is now linked. Do not claim an ambiguous candidate was linked.
 - **Related or partial PRs:** Always report any PR you classified as **likely related fix** or **related-only** in Step 4, with a link and a one-line reason, even though you deliberately did not link or close against it. Do not omit these just because no write action was taken on them — surfacing them is the point, so a maintainer can judge candidates you intentionally left out of the automated decision.
-- **PR-evidence and screening status:** Report `candidate_count`, `inventory_count`, `screened_count`, `required_inspection_count`, the plausible candidate numbers, and the fully inspected candidate numbers from the two phases. State whether the direct status/index parses and all count/inspection invariants succeeded. If not, identify the actual direct parse/API/status/count/inspection failure and state that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening), while noting that duplicate-closure decisions were not affected. Never report truncation based on display length.
+- **PR-evidence and screening status:** Report `candidate_count`, `open_inventory_count`, `merged_inventory_count`, and `required_inspection_count` exactly as they appear in the artifacts, plus the plausible candidate numbers and the fully inspected candidate numbers from the two phases. Quote only fields that exist in the artifact — if a total you want to give has no field behind it, either omit it or say plainly that you derived it. State whether the direct status/index parses and all count/inspection invariants succeeded. If not, identify the actual direct parse/API/status/count/inspection failure and state that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening), while noting that duplicate-closure decisions were not affected. Never report truncation based on display length.
 - **Closure:** If closing an issue that is conclusively fixed, state the evidence supporting closure and whether the fix is released or only present on the default branch. Include a note advising the author to reopen with evidence if the problem persists.
 - **Human reopen override:** If this workflow previously closed the issue and a person later reopened it, state that the issue will remain open for human review even if the agent found a duplicate or an existing fix.
-- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block listing the prefetched duplicate queries copied from `issue-candidate-index.json`, the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`), and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
+- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block that opens with the verbatim contents of `/tmp/gh-aw/agent/triage-audit-block.md`, then names the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`), and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
 
 Keep the comment concise and factual. Do not speculate or add unnecessary detail.
 
@@ -1267,7 +1309,10 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Prefetched duplicate searches (from `issue-candidate-index.json`): `apply failed` → #101, #145; `validation subnet` → #145; `address_space error` → no results
+- Prefetched duplicate searches (from `issue-candidate-index.json`):
+  - `apply failed` → #101, #145
+  - `validation subnet` → #145
+  - `address_space error` → no results
 - Reviewed source: `main.tf`, `variables.tf` in this repository
 - Checked the latest release notes for a prior fix
 
@@ -1289,7 +1334,10 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Prefetched duplicate searches (from `issue-candidate-index.json`): `subnet validation` → #4321; `expected behavior` → #4321, #4102; `address prefix` → no results
+- Prefetched duplicate searches (from `issue-candidate-index.json`):
+  - `subnet validation` → #4321
+  - `expected behavior` → #4321, #4102
+  - `address prefix` → no results
 - Opened and compared #4321 to assess whether it is the same root cause
 
 </details>
@@ -1312,7 +1360,10 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 <details>
 <summary><b>🔎 What this triage looked at</b></summary>
 
-- Prefetched duplicate searches (from `issue-candidate-index.json`): `module failure` → #5678, #5012; `apply error` → #5678; `provider timeout` → no results
+- Prefetched duplicate searches (from `issue-candidate-index.json`):
+  - `module failure` → #5678, #5012
+  - `apply error` → #5678
+  - `provider timeout` → no results
 - Compared against #5678 (same error and context); confirmed #5678 is the oldest matching issue
 
 </details>
