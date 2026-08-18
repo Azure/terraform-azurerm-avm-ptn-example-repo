@@ -33,6 +33,11 @@ run "derives_the_lock_name_from_the_kind_when_none_is_supplied" {
     condition     = azapi_resource.lock[0].body.properties.notes == "Cannot delete the resource or its child resources."
     error_message = "A CanNotDelete lock must carry the delete-scoped note."
   }
+
+  assert {
+    condition     = azapi_resource.lock[0].type == var.resource_types.authorization_locks
+    error_message = "The lock resource must use the configured resource type."
+  }
 }
 
 run "honours_an_explicit_lock_name" {
@@ -53,6 +58,22 @@ run "honours_an_explicit_lock_name" {
   assert {
     condition     = azapi_resource.lock[0].body.properties.notes == "Cannot delete or modify the resource or its child resources."
     error_message = "A ReadOnly lock must carry the modify-scoped note."
+  }
+}
+
+run "honours_explicit_lock_notes" {
+  command = plan
+
+  variables {
+    lock = {
+      kind  = "ReadOnly"
+      notes = "Managed by the platform team."
+    }
+  }
+
+  assert {
+    condition     = azapi_resource.lock[0].body.properties.notes == "Managed by the platform team."
+    error_message = "Explicit lock notes must override the generated default."
   }
 }
 
