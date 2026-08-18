@@ -31,6 +31,17 @@ DESCRIPTION
   nullable    = false
 }
 
+variable "flow_timeout_in_minutes" {
+  type        = number
+  default     = null
+  description = "The flow timeout in minutes for the virtual network. Valid values are between 4 and 30."
+
+  validation {
+    condition     = var.flow_timeout_in_minutes == null || try(var.flow_timeout_in_minutes >= 4 && var.flow_timeout_in_minutes <= 30, false)
+    error_message = "The flow_timeout_in_minutes must be between 4 and 30."
+  }
+}
+
 variable "lock" {
   type = object({
     kind = string
