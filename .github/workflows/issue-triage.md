@@ -902,6 +902,58 @@ steps:
       exit 0
     fi
     echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
+- name: Render the PR screening status line
+  run: |
+    set -o pipefail
+    mkdir -p /tmp/gh-aw/agent
+    SCREEN_FILE=/tmp/gh-aw/agent/pr-candidate-screening-index.json
+    STATUS_LINE=/tmp/gh-aw/agent/triage-screening-status.md
+    FALLBACK='- **PR-evidence and screening status:** the PR screening index did not load, so screening counts and candidate numbers are unavailable for this run. Confirmed-fix closure and PR linking were skipped; duplicate-closure decisions are unaffected.'
+    write_fallback() {
+      printf '%s\n' "${FALLBACK}" > "${STATUS_LINE}"
+      echo "Screening status: ${1}; wrote fallback line"
+    }
+    if [ ! -s "${SCREEN_FILE}" ]; then
+      write_fallback "screening index missing or empty"
+      exit 0
+    fi
+    if ! jq -e '
+        (.loaded == true) and (.complete == true) and (.success == true)
+        and ((.errors // []) == [])
+        and ((.candidate_count | type) == "number")
+        and ((.open_inventory_count | type) == "number")
+        and ((.merged_inventory_count | type) == "number")
+        and ((.required_inspection_count | type) == "number")
+        and ((.open_inventory_screening | type) == "array")
+      ' "${SCREEN_FILE}" > /dev/null 2>&1; then
+      write_fallback "screening index incomplete or malformed"
+      exit 0
+    fi
+    if ! jq -r '
+        def numlist($nums):
+          if (($nums // []) | length) == 0 then "none"
+          else (($nums // []) | sort | map("#" + (. | tostring)) | join(", "))
+          end;
+        ([.open_inventory_screening[]
+          | select(.lexical_relevance.plausible == true)
+          | .number] | unique | sort) as $plausible
+        | "- **PR-evidence and screening status:** `candidate_count`: \(.candidate_count), "
+          + "`open_inventory_count`: \(.open_inventory_count), "
+          + "`merged_inventory_count`: \(.merged_inventory_count), "
+          + "`required_inspection_count`: \(.required_inspection_count). "
+          + "Required inspection: \(numlist(.required_inspection_numbers)). "
+          + "Lexically plausible (full inspection mandatory): \(numlist($plausible)). "
+          + "Direct status/index parses succeeded and all count/inspection invariants passed."
+      ' "${SCREEN_FILE}" > "${STATUS_LINE}"; then
+      write_fallback "render failed"
+      exit 0
+    fi
+    if [ ! -s "${STATUS_LINE}" ]; then
+      write_fallback "render produced no output"
+      exit 0
+    fi
+    echo "Screening status rendered -> ${STATUS_LINE}"
+    cat "${STATUS_LINE}"
 tools:
   cache-memory: true
   github:
@@ -1120,7 +1172,7 @@ Complete **both phases**, never skipping or sampling:
 1. **Required-inspection phase:** Fully inspect every PR in `required_inspection`, including its real diff, complete changed-file list, commits, tests/checks, status, base branch, and review discussion. Exact references, timeline links, and commit mentions are candidates, never proof.
 2. **Inventory screening phase:** Screen every inventory candidate, open and merged. Required candidates with `open_inventory: true` or `merged_inventory: true` are screened by their mandatory full inspection; screen every entry in `open_inventory_screening` from its compact title/body/file signals. Fully inspect the real PR/diff for every entry marked lexically plausible and every additional candidate that your judgment finds plausible. Record inventory-only entries found irrelevant as screened without loading full diffs. When the reported behavior does not reproduce against current default-branch source, treat `merged_pr_inventory` as the primary place to look for the change that fixed it, and name that PR rather than concluding only that it was "possibly fixed earlier".
 
-Track `open_inventory_count` and `merged_inventory_count` from status, the plausible candidate numbers, and the fully inspected candidate numbers. Your screened total must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link.
+Track `open_inventory_count` and `merged_inventory_count` from status, the plausible candidate numbers, and the fully inspected candidate numbers. Your screened total must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Use these figures to drive your own inspection work — you do not retype them into the comment, because Step 6 publishes the pre-rendered `/tmp/gh-aw/agent/triage-screening-status.md` line instead. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link. A candidate marked lexically plausible always appears in your write-up, either as a confirmed fix or under **Related or partial PRs** — never silently dropped because you judged it irrelevant.
 
 If either status/index file is missing, unreadable, malformed, fails either direct `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or non-empty `errors`, or if any count/inspection invariant mismatches, see **Incomplete or Failed Evidence Load or Screening** below.
 
@@ -1265,8 +1317,8 @@ The bullet points should include:
 - **Suggested fix:** If you identified a likely root cause or potential fix from investigating the source code, include it with specific file/line references. If the issue is a question or consideration rather than a bug, note that. If you could not determine a fix, state that further investigation is needed.
 - **Already fixed:** If a recent release or merged PR already addresses this issue, tell the user which version or PR contains the fix and recommend they upgrade.
 - **PR linked:** If you appended `Fixes #<issue-number>` to a confirmed-fix PR, identify the PR and state that it is now linked. Do not claim an ambiguous candidate was linked.
-- **Related or partial PRs:** Always report any PR you classified as **likely related fix** or **related-only** in Step 4, with a link and a one-line reason, even though you deliberately did not link or close against it. Do not omit these just because no write action was taken on them — surfacing them is the point, so a maintainer can judge candidates you intentionally left out of the automated decision.
-- **PR-evidence and screening status:** Report `candidate_count`, `open_inventory_count`, `merged_inventory_count`, and `required_inspection_count` exactly as they appear in the artifacts, plus the plausible candidate numbers and the fully inspected candidate numbers from the two phases. Quote only fields that exist in the artifact — if a total you want to give has no field behind it, either omit it or say plainly that you derived it. State whether the direct status/index parses and all count/inspection invariants succeeded. If not, identify the actual direct parse/API/status/count/inspection failure and state that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening), while noting that duplicate-closure decisions were not affected. Never report truncation based on display length.
+- **Related or partial PRs:** Always report any PR you classified as **likely related fix** or **related-only** in Step 4, with a link and a one-line reason, even though you deliberately did not link or close against it. Do not omit these just because no write action was taken on them — surfacing them is the point, so a maintainer can judge candidates you intentionally left out of the automated decision. Every candidate named as lexically plausible in the rendered screening-status line must appear here unless you reported it as a confirmed fix; if you judged one irrelevant, say so and why, rather than leaving it unmentioned.
+- **PR-evidence and screening status:** This bullet is rendered for you. Read `/tmp/gh-aw/agent/triage-screening-status.md` (`cat /tmp/gh-aw/agent/triage-screening-status.md`) and paste its single line into the comment **verbatim**, exactly as written, including every count and candidate number. Do not re-derive any figure from the artifacts, do not shorten or omit a candidate list, and do not replace a list with a summary such as "none this run" — the rendered line is already correct, and any difference between that file and your comment is a defect. If, and only if, you fully inspected candidates beyond the ones it names, append one sentence naming those extra numbers. If the rendered line reports that the index did not load, treat this as a failed evidence load: state that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening), while noting that duplicate-closure decisions were not affected. Never report truncation based on display length.
 - **Closure:** If closing an issue that is conclusively fixed, state the evidence supporting closure and whether the fix is released or only present on the default branch. Include a note advising the author to reopen with evidence if the problem persists.
 - **Human reopen override:** If this workflow previously closed the issue and a person later reopened it, state that the issue will remain open for human review even if the agent found a duplicate or an existing fix.
 - **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block that opens with the verbatim contents of `/tmp/gh-aw/agent/triage-audit-block.md`, then names the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`), and the key sources you inspected. This is for transparency — keep it out of the visible summary above.
