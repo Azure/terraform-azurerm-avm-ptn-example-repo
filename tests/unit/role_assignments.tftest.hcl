@@ -165,3 +165,18 @@ run "creates_one_role_assignment_per_map_entry" {
     error_message = "Each role assignment must get a distinct deterministic name."
   }
 }
+
+run "rejects_a_principal_id_that_is_not_a_guid" {
+  command = plan
+
+  variables {
+    role_assignments = {
+      reader = {
+        role_definition_id_or_name = "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/roleDefinitions/acdd72a7-3385-48ef-bd42-f606fba81ae7"
+        principal_id               = "contoso-platform-team"
+      }
+    }
+  }
+
+  expect_failures = [var.role_assignments]
+}
