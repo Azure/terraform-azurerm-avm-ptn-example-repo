@@ -85,13 +85,14 @@ run "forwards_optional_role_assignment_properties_when_set" {
   variables {
     role_assignments = {
       contributor = {
-        role_definition_id_or_name = "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c"
-        principal_id               = "22222222-2222-2222-2222-222222222222"
-        description                = "Grants contributor access."
-        principal_type             = "ServicePrincipal"
-        condition                  = "@Resource[Microsoft.Network/virtualNetworks] StringEquals 'x'"
-        condition_version          = "2.0"
-        name                       = "33333333-3333-3333-3333-333333333333"
+        role_definition_id_or_name             = "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c"
+        principal_id                           = "22222222-2222-2222-2222-222222222222"
+        description                            = "Grants contributor access."
+        principal_type                         = "ServicePrincipal"
+        condition                              = "@Resource[Microsoft.Network/virtualNetworks] StringEquals 'x'"
+        condition_version                      = "2.0"
+        delegated_managed_identity_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-unit-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uai-unit-test"
+        name                                   = "33333333-3333-3333-3333-333333333333"
       }
     }
   }
@@ -112,9 +113,30 @@ run "forwards_optional_role_assignment_properties_when_set" {
   }
 
   assert {
+    condition     = azapi_resource.role_assignment["contributor"].body.properties.delegatedManagedIdentityResourceId == var.role_assignments["contributor"].delegated_managed_identity_resource_id
+    error_message = "A supplied delegated managed identity resource ID must be forwarded to the role assignment."
+  }
+
+  assert {
     condition     = azapi_resource.role_assignment["contributor"].name == "33333333-3333-3333-3333-333333333333"
     error_message = "A supplied role assignment name must override the generated UUID."
   }
+}
+
+run "rejects_an_invalid_delegated_managed_identity_resource_id" {
+  command = plan
+
+  variables {
+    role_assignments = {
+      invalid = {
+        role_definition_id_or_name             = "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/roleDefinitions/acdd72a7-3385-48ef-bd42-f606fba81ae7"
+        principal_id                           = "11111111-1111-1111-1111-111111111111"
+        delegated_managed_identity_resource_id = "not-a-resource-id"
+      }
+    }
+  }
+
+  expect_failures = [var.role_assignments]
 }
 
 run "creates_one_role_assignment_per_map_entry" {
