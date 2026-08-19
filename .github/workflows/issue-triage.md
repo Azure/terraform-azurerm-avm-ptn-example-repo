@@ -129,7 +129,6 @@ steps:
   run: |
     set -o pipefail
     mkdir -p /tmp/gh-aw/agent
-    EVIDENCE_FILE=/tmp/gh-aw/agent/pr-candidate-evidence.json
     STATUS_FILE=/tmp/gh-aw/agent/pr-candidate-status.json
     INDEX_FILE=/tmp/gh-aw/agent/pr-candidate-screening-index.json
     INDEX_VERSION=1
@@ -137,9 +136,6 @@ steps:
     NUM="${ISSUE_NUMBER}"
     write_failure_contracts() {
       FAILURE_MESSAGE="$1"
-      jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "${FAILURE_MESSAGE}" \
-        '{issue_number:($issue | tonumber? // $issue),repository:$repo,loaded:false,complete:false,success:false,errors:[$error],candidate_count:0,candidates:[]}' \
-        > "${EVIDENCE_FILE}"
       jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "${FAILURE_MESSAGE}" --argjson version "${INDEX_VERSION}" \
         '{
           version:$version,
@@ -157,7 +153,6 @@ steps:
         --arg issue "${NUM}" \
         --arg repo "${REPO}" \
         --arg error "${FAILURE_MESSAGE}" \
-        --arg evidence_path "${EVIDENCE_FILE}" \
         --arg index_path "${INDEX_FILE}" \
         --argjson index_version "${INDEX_VERSION}" \
         '{
@@ -178,7 +173,6 @@ steps:
           timeline_required_inspection_numbers:[],
           commit_required_inspection_count:0,
           commit_required_inspection_numbers:[],
-          evidence_path:$evidence_path,
           screening_index_path:$index_path,
           index_version:$index_version
         }' > "${STATUS_FILE}"
@@ -383,24 +377,8 @@ steps:
       echo '[]' > "${WORK_DIR}/deduped.json"
     fi
     CANDIDATE_COUNT=$(jq 'length' "${WORK_DIR}/deduped.json" 2>/dev/null || echo 0)
-    jq -n \
-      --arg issue "${NUM}" \
-      --arg repo "${REPO}" \
-      --argjson complete "${COMPLETE}" \
-      --slurpfile candidates "${WORK_DIR}/deduped.json" \
-      --rawfile errorlog "${ERRORS_FILE}" \
-      '{
-        issue_number: ($issue | tonumber),
-        repository: $repo,
-        loaded: true,
-        complete: $complete,
-        success: $complete,
-        errors: ($errorlog | split("\n") | map(select(length > 0))),
-        candidate_count: ($candidates[0] | length),
-        candidates: $candidates[0]
-      }' > "${EVIDENCE_FILE}"
-    # Build a compact index for inventory screening. The evidence file above remains
-    # authoritative; this bounded view exists so the agent never has to print it.
+    # Build a compact index for inventory screening, bounded so the agent never
+    # has to print a large file to enumerate candidates.
     jq -n \
       --arg issue "${NUM}" \
       --arg repo "${REPO}" \
@@ -566,7 +544,6 @@ steps:
     jq -n \
       --arg issue "${NUM}" \
       --arg repo "${REPO}" \
-      --arg evidence_path "${EVIDENCE_FILE}" \
       --arg index_path "${INDEX_FILE}" \
       --argjson index_version "${INDEX_VERSION}" \
       --argjson complete "${COMPLETE}" \
@@ -607,7 +584,6 @@ steps:
             timeline_required_inspection_numbers: $timeline,
             commit_required_inspection_count: ($commit | length),
             commit_required_inspection_numbers: $commit,
-            evidence_path: $evidence_path,
             screening_index_path: $index_path,
             index_version: $index_version
           }
@@ -640,7 +616,7 @@ steps:
           queries:[],
           candidate_count:0,
           open_candidate_count:0,
-          
+          must_compare:[],
           candidates:[]
         }' > "${INDEX_FILE}"
     }
@@ -843,6 +819,11 @@ steps:
             | sort_by(.number)
           ) as $candidates
         | ([$candidates[] | select(.state == "open") | .number] | sort) as $open_numbers
+        | ([$candidates[]
+            | select(.lexical_relevance.score >= 12)]
+           | sort_by(-.lexical_relevance.score, .number)
+           | .[0:6]
+           | map(.number)) as $must_compare
         | {
             version: $version,
             issue_number: ($issue | tonumber),
@@ -855,105 +836,121 @@ steps:
             queries: $queries[0],
             candidate_count: ($candidates | length),
             open_candidate_count: ($open_numbers | length),
+            must_compare: $must_compare,
             candidates: $candidates
           }
       ' > "${INDEX_FILE}"
     echo "Duplicate candidate prefetch: queries=${QUERY_COUNT}, index=${INDEX_FILE}, complete=${COMPLETE}"
     rm -rf "${WORK_DIR}"
-- name: Render the duplicate-search audit block
+- name: Render triage evidence blocks
   run: |
     set -o pipefail
-    mkdir -p /tmp/gh-aw/agent
-    INDEX_FILE=/tmp/gh-aw/agent/issue-candidate-index.json
-    AUDIT_FILE=/tmp/gh-aw/agent/triage-audit-block.md
-    FALLBACK='- Prefetched duplicate searches: the deterministic duplicate index did not load, so no prefetched search record is available for this run.'
-    write_fallback() {
-      printf '%s\n' "${FALLBACK}" > "${AUDIT_FILE}"
-      echo "Audit block: ${1}; wrote fallback line"
+    AGENT_DIR=/tmp/gh-aw/agent
+    mkdir -p "${AGENT_DIR}"
+    DUP_INDEX="${AGENT_DIR}/issue-candidate-index.json"
+    PR_STATUS="${AGENT_DIR}/pr-candidate-status.json"
+    PR_INDEX="${AGENT_DIR}/pr-candidate-screening-index.json"
+    AUDIT_FILE="${AGENT_DIR}/triage-audit-block.md"
+    STATUS_LINE="${AGENT_DIR}/triage-screening-status.md"
+    # The validation programs below are the deterministic contracts the prompt used
+    # to ask the agent to run by hand. Evaluating them here keeps ~5KB of dense
+    # filter syntax out of the model-facing prompt, and means a run cannot report
+    # that the invariants passed unless they were actually evaluated.
+    AUDIT_FALLBACK='- Prefetched duplicate searches: the deterministic duplicate index did not load, so no prefetched search record is available for this run. Do not close this issue as a duplicate in this run.'
+    STATUS_FALLBACK='- **PR-evidence and screening status:** the deterministic PR evidence contracts did not pass, so screening counts and candidate numbers are unavailable for this run. Confirmed-fix closure and PR linking were skipped; duplicate-closure decisions are unaffected.'
+    fallback() {
+      printf '%s\n' "$2" > "$1"
+      echo "render: $3; wrote fallback line to $1"
     }
-    if [ ! -s "${INDEX_FILE}" ]; then
-      write_fallback "index file missing or empty"
-      exit 0
-    fi
-    if ! jq -e '(.loaded == true) and (.complete == true) and ((.queries | type) == "array") and ((.queries | length) > 0)' "${INDEX_FILE}" > /dev/null 2>&1; then
-      write_fallback "index incomplete or has no queries"
-      exit 0
-    fi
-    if ! jq -r '
-        ["- Prefetched duplicate searches (from `issue-candidate-index.json`):"]
-        + (
-            .queries
-            | map(
-                "  - `" + (.query // "") + "` → "
-                + (
-                    if (((.numbers // []) | length) == 0) then "no results"
-                    else ((.numbers // []) | map("#" + (. | tostring)) | join(", "))
-                    end
-                  )
-              )
-          )
-        | .[]
-      ' "${INDEX_FILE}" > "${AUDIT_FILE}"; then
-      write_fallback "render failed"
-      exit 0
-    fi
-    if [ ! -s "${AUDIT_FILE}" ]; then
-      write_fallback "render produced no output"
-      exit 0
-    fi
-    echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
-- name: Render the PR screening status line
-  run: |
-    set -o pipefail
-    mkdir -p /tmp/gh-aw/agent
-    SCREEN_FILE=/tmp/gh-aw/agent/pr-candidate-screening-index.json
-    STATUS_LINE=/tmp/gh-aw/agent/triage-screening-status.md
-    FALLBACK='- **PR-evidence and screening status:** the PR screening index did not load, so screening counts and candidate numbers are unavailable for this run. Confirmed-fix closure and PR linking were skipped; duplicate-closure decisions are unaffected.'
-    write_fallback() {
-      printf '%s\n' "${FALLBACK}" > "${STATUS_LINE}"
-      echo "Screening status: ${1}; wrote fallback line"
+    render_audit() {
+      if [ ! -s "${DUP_INDEX}" ]; then
+        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index missing or empty"
+        return
+      fi
+      if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.query_count | type == "number") and (.queries | type == "array") and (.candidate_count | type == "number") and (.candidates | type == "array") and (.open_candidate_count | type == "number") and (.must_compare | type == "array") and ((.must_compare - [.candidates[].number]) == []) and (.query_count == (.queries | length)) and (.candidate_count == (.candidates | length)) and (.open_candidate_count == ([.candidates[] | select(.state == "open")] | length)) and ([.candidates[].number] | unique | length) == .candidate_count and (all(.queries[]; (.query | type == "string") and (.numbers | type == "array"))) and (all(.candidates[]; (.number | type == "number") and (.title | type == "string") and (.state | type == "string") and (.created_at | type == "string") and (.url | type == "string") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.matched_queries | type == "array") and (.matched_queries | length > 0) and (.lexical_relevance.score | type == "number") and (.lexical_relevance.signals | type == "object")))' "${DUP_INDEX}" > /dev/null 2>&1; then
+        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index failed its contract"
+        return
+      fi
+      if ! jq -r '
+          def numlist($nums):
+            if (($nums // []) | length) == 0 then "none"
+            else (($nums // []) | map("#" + (. | tostring)) | join(", "))
+            end;
+          ["- Prefetched duplicate searches (from `issue-candidate-index.json`):"]
+          + (
+              .queries
+              | map(
+                  "  - `" + (.query // "") + "` → "
+                  + (
+                      if (((.numbers // []) | length) == 0) then "no results"
+                      else ((.numbers // []) | map("#" + (. | tostring)) | join(", "))
+                      end
+                    )
+                )
+            )
+          + ["- Candidates requiring explicit comparison: " + numlist(.must_compare)]
+          | .[]
+        ' "${DUP_INDEX}" > "${AUDIT_FILE}"; then
+        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render failed"
+        return
+      fi
+      if [ ! -s "${AUDIT_FILE}" ]; then
+        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render produced no output"
+        return
+      fi
+      echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
     }
-    if [ ! -s "${SCREEN_FILE}" ]; then
-      write_fallback "screening index missing or empty"
-      exit 0
-    fi
-    if ! jq -e '
-        (.loaded == true) and (.complete == true) and (.success == true)
-        and ((.errors // []) == [])
-        and ((.candidate_count | type) == "number")
-        and ((.open_inventory_count | type) == "number")
-        and ((.merged_inventory_count | type) == "number")
-        and ((.required_inspection_count | type) == "number")
-        and ((.open_inventory_screening | type) == "array")
-      ' "${SCREEN_FILE}" > /dev/null 2>&1; then
-      write_fallback "screening index incomplete or malformed"
-      exit 0
-    fi
-    if ! jq -r '
-        def numlist($nums):
-          if (($nums // []) | length) == 0 then "none"
-          else (($nums // []) | sort | map("#" + (. | tostring)) | join(", "))
-          end;
-        ([.open_inventory_screening[]
-          | select(.lexical_relevance.plausible == true)
-          | .number] | unique | sort) as $plausible
-        | "- **PR-evidence and screening status:** `candidate_count`: \(.candidate_count), "
-          + "`open_inventory_count`: \(.open_inventory_count), "
-          + "`merged_inventory_count`: \(.merged_inventory_count), "
-          + "`required_inspection_count`: \(.required_inspection_count). "
-          + "Required inspection: \(numlist(.required_inspection_numbers)). "
-          + "Lexically plausible (full inspection mandatory): \(numlist($plausible)). "
-          + "Direct status/index parses succeeded and all count/inspection invariants passed."
-      ' "${SCREEN_FILE}" > "${STATUS_LINE}"; then
-      write_fallback "render failed"
-      exit 0
-    fi
-    if [ ! -s "${STATUS_LINE}" ]; then
-      write_fallback "render produced no output"
-      exit 0
-    fi
-    echo "Screening status rendered -> ${STATUS_LINE}"
-    cat "${STATUS_LINE}"
+    render_status() {
+      if [ ! -s "${PR_STATUS}" ] || [ ! -s "${PR_INDEX}" ]; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status or screening index missing or empty"
+        return
+      fi
+      if ! jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.merged_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.merged_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' "${PR_STATUS}" > /dev/null 2>&1; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status failed its contract"
+        return
+      fi
+      if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == $index.merged_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory")) and (.open_inventory or .merged_inventory))) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.merged_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' "${PR_INDEX}" > /dev/null 2>&1; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR screening index failed its contract"
+        return
+      fi
+      if ! jq -e -n --slurpfile s "${PR_STATUS}" --slurpfile i "${PR_INDEX}" '
+          ($s[0].candidate_count == $i[0].candidate_count)
+          and ($s[0].open_inventory_count == $i[0].open_inventory_count)
+          and ($s[0].merged_inventory_count == $i[0].merged_inventory_count)
+          and ($s[0].required_inspection_count == $i[0].required_inspection_count)
+          and ($s[0].required_inspection_numbers == $i[0].required_inspection_numbers)
+        ' > /dev/null 2>&1; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status and screening index disagree on counts"
+        return
+      fi
+      if ! jq -r '
+          def numlist($nums):
+            if (($nums // []) | length) == 0 then "none"
+            else (($nums // []) | sort | map("#" + (. | tostring)) | join(", "))
+            end;
+          ([.open_inventory_screening[]
+            | select(.lexical_relevance.plausible == true)
+            | .number] | unique | sort) as $plausible
+          | "- **PR-evidence and screening status:** `candidate_count`: \(.candidate_count), "
+            + "`open_inventory_count`: \(.open_inventory_count), "
+            + "`merged_inventory_count`: \(.merged_inventory_count), "
+            + "`required_inspection_count`: \(.required_inspection_count). "
+            + "Required inspection: \(numlist(.required_inspection_numbers)). "
+            + "Lexically plausible (full inspection mandatory): \(numlist($plausible)). "
+            + "Direct status/index parses succeeded and all count/inspection invariants passed."
+        ' "${PR_INDEX}" > "${STATUS_LINE}"; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render failed"
+        return
+      fi
+      if [ ! -s "${STATUS_LINE}" ]; then
+        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render produced no output"
+        return
+      fi
+      echo "Screening status rendered -> ${STATUS_LINE}"
+      cat "${STATUS_LINE}"
+    }
+    render_audit
+    render_status
 tools:
   cache-memory: true
   github:
@@ -1027,19 +1024,22 @@ Earlier triage comments on this issue — including ones you wrote in previous r
 
 ### Deterministic Duplicate Candidate Contract (read this first)
 
-A pre-agent step has already issued a fixed set of issue searches and written `/tmp/gh-aw/agent/issue-candidate-index.json`. Read it **before** searching yourself. Run these direct-path checks exactly:
+A pre-agent step has already issued a fixed set of issue searches, validated the result against a strict schema and count contract, and written `/tmp/gh-aw/agent/issue-candidate-index.json`. Read it **before** searching yourself:
 
 ```bash
-jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.query_count | type == "number") and (.queries | type == "array") and (.candidate_count | type == "number") and (.candidates | type == "array") and (.open_candidate_count | type == "number") and (.query_count == (.queries | length)) and (.candidate_count == (.candidates | length)) and (.open_candidate_count == ([.candidates[] | select(.state == "open")] | length)) and ([.candidates[].number] | unique | length) == .candidate_count and (all(.queries[]; (.query | type == "string") and (.numbers | type == "array"))) and (all(.candidates[]; (.number | type == "number") and (.title | type == "string") and (.state | type == "string") and (.created_at | type == "string") and (.url | type == "string") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.matched_queries | type == "array") and (.matched_queries | length > 0) and (.lexical_relevance.score | type == "number") and (.lexical_relevance.signals | type == "object")))' /tmp/gh-aw/agent/issue-candidate-index.json
-jq '{query_count,candidate_count,open_candidate_count,queries:[.queries[] | {query,total_count,matched:(.numbers | length)}]}' /tmp/gh-aw/agent/issue-candidate-index.json
+jq '{query_count,candidate_count,open_candidate_count,must_compare,queries:[.queries[] | {query,total_count,matched:(.numbers | length)}]}' /tmp/gh-aw/agent/issue-candidate-index.json
 jq '.candidates[] | {number,title,state,created_at,url,body_excerpt,matched_queries,lexical_relevance}' /tmp/gh-aw/agent/issue-candidate-index.json
 ```
+
+You do not have to validate the file. If its contract failed, the rendered audit block at `/tmp/gh-aw/agent/triage-audit-block.md` says so in place of the query list, and that is your signal that the deterministic duplicate search is unavailable: say so in your triage comment, run your own searches, and **do not close this issue as a duplicate in this run**.
 
 The queries are derived from the issue title by a fixed tokenizer, not by the model: it takes the four most distinctive title terms, issues every pair of them, and adds remedy-worded variants of the strongest term (`allow`, `support`, `custom`) so a feature-request framing of the same gap is reachable. This is a **floor, not a ceiling** — it cannot know the issue's error text, and it cannot paraphrase.
 
 **Screen every entry in `.candidates`** and open the promising ones. `lexical_relevance.score` orders your reading; it does not decide anything and does not prove a shared root cause.
 
-If the file is missing, unreadable, malformed, fails the `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or a non-empty `errors` array, then say in your triage comment that the deterministic duplicate search could not be loaded, run your own searches, and **do not close this issue as a duplicate in this run**.
+**`.must_compare` is mandatory reading.** It holds the highest-scoring candidates, and every issue in it **must be opened and read this run** — not skimmed from its title or `body_excerpt`, which are truncated and routinely hide the sentence that decides the match. Account for **every** number in `.must_compare` in your Duplicate check bullet with a short verdict each: duplicate, possible duplicate, related, or not related, with a few words of reason. A number you never mention reads as a candidate you never opened.
+
+This obligation is about **reading, not deciding**. A high score never justifies a closure on its own, and a candidate you were required to open is very often correctly dismissed — say so explicitly instead of omitting it. Conversely, a duplicate may be an issue that is *not* in `.must_compare`: the list is the mandatory floor, never the full set of things worth comparing.
 
 ### Additional Searching
 
@@ -1134,26 +1134,21 @@ Before investigating a new fix, determine whether a PR or release already addres
 
 ### Deterministic PR Candidate Contracts (read this first)
 
-A pre-agent step has already fetched authoritative PR candidate evidence and written three files:
+A pre-agent step has already fetched PR candidate evidence, validated it against strict schema, count, and cross-file contracts, and written two files:
 
 - `/tmp/gh-aw/agent/pr-candidate-status.json` — the small status and count contract.
 - `/tmp/gh-aw/agent/pr-candidate-screening-index.json` — the compact inventory-screening index.
-- `/tmp/gh-aw/agent/pr-candidate-evidence.json` — authoritative full source evidence for candidate-specific follow-up only.
 
-**Use the status and index direct paths before doing anything else in Step 4.** Run these direct-path checks exactly (additional candidate-specific `jq` selectors are allowed):
+**Read them before doing anything else in Step 4** (additional candidate-specific `jq` selectors are allowed):
 
 ```bash
-jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.merged_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.merged_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' /tmp/gh-aw/agent/pr-candidate-status.json
-jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == $index.merged_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory")) and (.open_inventory or .merged_inventory))) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.merged_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 jq '{loaded,complete,success,errors,candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,exact_required_inspection_count,exact_required_inspection_numbers,timeline_required_inspection_count,timeline_required_inspection_numbers,commit_required_inspection_count,commit_required_inspection_numbers,screening_index_path,index_version}' /tmp/gh-aw/agent/pr-candidate-status.json
 jq '{candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,inventory_only_count:(.open_inventory_screening | length),plausible_numbers:[(.required_inspection + .open_inventory_screening)[] | select((.open_inventory or .merged_inventory) and .lexical_relevance.plausible) | .number]}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 jq '.required_inspection[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 jq '.open_inventory_screening[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 ```
 
-Never `cat`, concatenate, or print the complete evidence JSON to establish status or enumerate candidates. Never combine JSON files into one parser input. Parse each direct path independently; if source details are needed, query the evidence file for one candidate number and only the needed fields. Never parse a copied terminal/UI capture or a displayed/truncated rendering. **Visible output ending early is not evidence of truncation or failure.** Report a parser or API error only when a direct-path `jq` parse actually fails or the status contract/API error fields say it failed.
-
-Compare the two directly parsed summaries: `candidate_count`, `open_inventory_count`, `merged_inventory_count`, `required_inspection_count`, and `required_inspection_numbers` must match between status and index. A disagreement is a count/inventory invariant failure.
+You do not have to validate these files or reconcile their counts — schema, count, and status-versus-index agreement were all checked before you started. If any of it failed, the rendered line at `/tmp/gh-aw/agent/triage-screening-status.md` says so in place of the counts, and that is your signal to apply the evidence veto described below. Never parse a copied terminal/UI capture or a displayed/truncated rendering. **Visible output ending early is not evidence of truncation or failure.** Report a parser or API error only when a direct-path `jq` parse actually fails or the rendered status line says the contracts did not pass.
 
 The file is produced by fixed `gh api`/GraphQL calls (not the model), so it deterministically covers, across **all PR states with no date limit**:
 
@@ -1174,7 +1169,7 @@ Complete **both phases**, never skipping or sampling:
 
 Track `open_inventory_count` and `merged_inventory_count` from status, the plausible candidate numbers, and the fully inspected candidate numbers. Your screened total must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Use these figures to drive your own inspection work — you do not retype them into the comment, because Step 6 publishes the pre-rendered `/tmp/gh-aw/agent/triage-screening-status.md` line instead. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link. A candidate marked lexically plausible always appears in your write-up, either as a confirmed fix or under **Related or partial PRs** — never silently dropped because you judged it irrelevant.
 
-If either status/index file is missing, unreadable, malformed, fails either direct `jq -e` check, reports `loaded: false`, `complete: false`, `success: false`, or non-empty `errors`, or if any count/inspection invariant mismatches, see **Incomplete or Failed Evidence Load or Screening** below.
+If the rendered status line reports that the contracts did not pass, or if a required or plausible candidate ends up not fully inspected, see **Incomplete or Failed Evidence Load or Screening** below.
 
 ### Candidate Discovery
 
@@ -1205,16 +1200,16 @@ Classify each candidate before taking any write action:
 
 ### Incomplete or Failed Evidence Load or Screening
 
-Use the direct-path status/index checks and the two-phase counts above. Do not infer failure or truncation from how much output a terminal or UI happens to display.
+The rendered status line at `/tmp/gh-aw/agent/triage-screening-status.md` is the authority on whether the deterministic evidence load succeeded. Do not infer failure or truncation from how much output a terminal or UI happens to display.
 
-If status or index is **missing, unreadable, malformed**, reports **`loaded: false`, `complete: false`, or `success: false`** (or non-empty `errors`), fails its schema/count/uniqueness check, `screened_count != open_inventory_count`, a required candidate was not fully inspected, or a plausible candidate was not fully inspected, the deterministic load/screening is incomplete. In that case:
+The load or screening is incomplete when that rendered line reports the contracts did not pass, or when your own screening work falls short: a required candidate was not fully inspected, or a plausible candidate was not fully inspected. In that case:
 
 - **Continue the full read-only investigation.** Keep searching and reading issues, PRs, commits, and releases exactly as described above — an incomplete prefetch never excuses skipping analysis.
 - **Conservatively block two specific write actions for this run:**
   1. Do not close the issue as `completed` under **Close an Issue That Is Already Fixed** below.
   2. Do not append `Fixes #<issue-number>` to any PR under **Link an Unlinked Fix PR** below.
 - **Labels, the issue type, and the triage comment are unaffected** — continue to apply `add-labels`, `set-issue-type`, and post the Step 6 comment normally.
-- **Explain the veto in the triage comment**: state the specific direct parse/API/status/count/inspection failure and that confirmed-fix closure and PR linking were skipped this run. Never claim that evidence was truncated merely because displayed output was shortened.
+- **Explain the veto in the triage comment**: state that the deterministic evidence load or your screening was incomplete and that confirmed-fix closure and PR linking were skipped this run. Never claim that evidence was truncated merely because displayed output was shortened.
 
 This veto applies only to the two write actions above. It does **not** apply to and must never weaken the **Duplicate Closure Flow** in Step 2: a duplicate closure (`close-issue` with the `duplicate` state reason) is decided solely by the duplicate-confidence rules in Step 2, is independent of this file, and remains fully allowed when the duplicate match is conclusive **even if this evidence load is missing, incomplete, or failed** — including when a separately discovered fix candidate is still open or unmerged. Missing or inconclusive fix-PR evidence must never downgrade or skip an otherwise-conclusive duplicate closure.
 
@@ -1309,7 +1304,7 @@ If the issue has already been triaged, do not skip analysis. Publish the current
 
 The bullet points should include:
 
-- **Duplicate check result:** Whether duplicates or similar issues were found, with links to those issues. If closing as duplicate, state this clearly with the link.
+- **Duplicate check result:** Whether duplicates or similar issues were found, with links to those issues. If closing as duplicate, state this clearly with the link. Account for every number in the index's `.must_compare` list here — each one gets a short verdict (duplicate, possible duplicate, related, or not related) with a few words of reason, even when the verdict is "not related". Silence about a mandatory-comparison candidate is read as a candidate you never opened.
 - **Issue type:** State whether you set the issue type to `Bug`, `Feature`, or `Task`, or whether the existing type was already correct.
 - **Labels applied:** List only the labels you **added** in this run, with a brief justification for each (e.g., "Applied `bug` — issue reports a failed `terraform apply`"). **Do NOT list or re-justify labels that were already on the issue.** If you added no new labels, say so in a single short line (do not enumerate the existing labels).
 - **No labels applied:** If no labels could be confidently determined, state this.
@@ -1365,6 +1360,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
   - `apply failed` → #101, #145
   - `validation subnet` → #145
   - `address_space error` → no results
+- Candidates requiring explicit comparison: #101, #145
 - Reviewed source: `main.tf`, `variables.tf` in this repository
 - Checked the latest release notes for a prior fix
 
@@ -1378,7 +1374,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-- **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it.
+- **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it. Also compared #4102 — related, but it concerns the subnet delegation path rather than address-prefix validation, so it is a different root cause.
 - **Labels applied:**
   - `bug` — issue reports a failed `terraform apply`
   - `question` — the issue also asks whether the current behavior is intended
@@ -1390,6 +1386,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
   - `subnet validation` → #4321
   - `expected behavior` → #4321, #4102
   - `address prefix` → no results
+- Candidates requiring explicit comparison: #4321, #4102
 - Opened and compared #4321 to assess whether it is the same root cause
 
 </details>
@@ -1402,7 +1399,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
 
 > ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
 
-- **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context.
+- **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context. Also compared #5012 — same error text, but it was raised against the parent module rather than this one, so it is not related.
 - **Labels applied:**
   - `bug` — issue reports a module error or failed `terraform apply`
   - `duplicate` — if this label exists in the repository label set and the issue is being closed as a duplicate
@@ -1416,6 +1413,7 @@ When you are **highly confident** an issue is a confirmed duplicate of another (
   - `module failure` → #5678, #5012
   - `apply error` → #5678
   - `provider timeout` → no results
+- Candidates requiring explicit comparison: #5678, #5012
 - Compared against #5678 (same error and context); confirmed #5678 is the oldest matching issue
 
 </details>
