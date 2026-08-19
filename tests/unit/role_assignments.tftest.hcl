@@ -36,8 +36,8 @@ run "uses_a_fully_qualified_role_definition_id_verbatim" {
   }
 
   assert {
-    condition     = azapi_resource.role_assignment["reader"].body.properties.roleDefinitionId == var.role_assignments["reader"].role_definition_id_or_name
-    error_message = "A fully qualified role definition ID must be used without a lookup."
+    condition     = azapi_resource.role_assignment["reader"].body == module.interfaces.role_assignments_azapi["reader"].body
+    error_message = "The role assignment body must come from the interfaces utility module."
   }
 
   assert {
@@ -46,8 +46,8 @@ run "uses_a_fully_qualified_role_definition_id_verbatim" {
   }
 
   assert {
-    condition     = length(local.role_definition_names) == 0
-    error_message = "A fully qualified role definition ID must not trigger a role definition name lookup."
+    condition     = module.interfaces.role_assignments_azapi["reader"].body.properties.roleDefinitionId == var.role_assignments["reader"].role_definition_id_or_name
+    error_message = "A fully qualified role definition ID must be used without a lookup."
   }
 
   assert {
@@ -56,7 +56,7 @@ run "uses_a_fully_qualified_role_definition_id_verbatim" {
   }
 }
 
-run "omits_optional_role_assignment_properties_when_unset" {
+run "ignores_null_optional_role_assignment_properties" {
   command = apply
 
   variables {
@@ -69,13 +69,8 @@ run "omits_optional_role_assignment_properties_when_unset" {
   }
 
   assert {
-    condition     = !can(azapi_resource.role_assignment["reader"].body.properties.description)
-    error_message = "An unset description must be omitted from the request body entirely."
-  }
-
-  assert {
-    condition     = !can(azapi_resource.role_assignment["reader"].body.properties.condition)
-    error_message = "An unset condition must be omitted from the request body entirely."
+    condition     = azapi_resource.role_assignment["reader"].ignore_null_property
+    error_message = "Null optional properties from the interfaces utility module must not be sent to Azure."
   }
 }
 
