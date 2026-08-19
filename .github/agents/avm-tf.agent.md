@@ -58,7 +58,7 @@ Use `-Path` to target another module directory and `-Ecosystem terraform` when e
 
 Always verify these rules from their current pages before changing a module:
 
-- **TFFR3:** use `Azure/azapi >= 2.12, < 3.0`. AzureRM is prohibited unless the capability has no AzAPI equivalent; the exception requires `azurerm ~> 4.0`, README documentation, an upstream tracking link, and the prescribed TFLint exclusion.
+- **TFFR3:** every new module that deploys Azure resources is AzAPI-based. Its primary resource and primary implementation MUST use `Azure/azapi >= 2.12, < 3.0`; never choose AzureRM for convenience or as the module's primary provider. AzureRM is permitted only for an individual resource whose functionality has no AzAPI equivalent, and the exception requires `azurerm ~> 4.0`, README documentation, an upstream tracking link, and the prescribed TFLint exclusion. That narrow exception does not make an AzureRM-based module acceptable.
 - **TFFR4:** every AzAPI resource declares `response_export_values`, including when it is `[]`.
 - **TFFR5:** every AzAPI resource declares `replace_triggers_refs`, including when it is `[]`.
 - **TFFR6:** every AzAPI `type` comes from the single `resource_types` object. Keys use the deterministic ARM-type-to-snake-case conversion. Parent submodule slots mirror the child shape without repeating the child's API-version defaults.
@@ -86,7 +86,11 @@ Prefer static `lifecycle.ignore_changes` when the paths are compile-time static.
 
 ## Standard interfaces
 
-Where the Azure resource supports them, expose the standard interfaces for diagnostic settings, role assignments, locks, managed identities, private endpoints, customer-managed keys, and tags. Compose `Azure/avm-utl-interfaces/azure` at `~> 0.6`; do not copy and drift the schemas.
+Where the Azure resource supports them, expose the standard interfaces for diagnostic settings, role assignments, locks, managed identities, private endpoints, customer-managed keys, and tags.
+
+For every RMFR4 or RMFR5 interface migration, fetch `https://raw.githubusercontent.com/Azure/Azure-Verified-Modules/refs/heads/main/docs/content/specs-defs/specs/terraform/interfaces.md` and the matching `https://raw.githubusercontent.com/Azure/Azure-Verified-Modules/refs/heads/main/docs/static/includes/interfaces/tf/int.<interface>.schema.tf` from `Azure/Azure-Verified-Modules`. Treat the entire canonical variable declaration as atomic: copy it in full, replace only documented placeholders, and preserve attribute ordering, types, defaults, nullability, descriptions, validations, and error messages exactly. Lint notices are migration hints, not complete implementation instructions.
+
+The resource module declares the exact consumer-facing schema. Compose `Azure/avm-utl-interfaces/azure` at `~> 0.6` for implementation and composition; do not reconstruct either contract from memory.
 
 Diagnostic settings use the v2 utility interface:
 
