@@ -156,6 +156,13 @@ DESCRIPTION
     ])
     error_message = "Each `role_assignments[*].delegated_managed_identity_resource_id` must be a valid user-assigned managed identity resource ID, or null."
   }
+  validation {
+    condition = alltrue([
+      for _, v in var.role_assignments :
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", v.principal_id))
+    ])
+    error_message = "Each `role_assignments[*].principal_id` must be a GUID, for example `00000000-0000-0000-0000-000000000000`."
+  }
 }
 
 # tflint-ignore: terraform_unused_declarations
