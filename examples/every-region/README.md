@@ -6,12 +6,12 @@ Attempt to create a resource group in every Azure region. This is a simple test 
 
 ```hcl
 terraform {
-  required_version = "~> 1.5"
+  required_version = ">= 1.9, < 2.0"
 
   required_providers {
     azapi = {
       source  = "Azure/azapi"
-      version = "~> 2.0"
+      version = "~> 2.8"
     }
     random = {
       source  = "hashicorp/random"
@@ -54,9 +54,9 @@ resource "azapi_resource" "this" {
 
 The following requirements are needed by this module:
 
-- <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (~> 1.5)
+- <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (>= 1.9, < 2.0)
 
-- <a name="requirement_azapi"></a> [azapi](#requirement\_azapi) (~> 2.0)
+- <a name="requirement_azapi"></a> [azapi](#requirement\_azapi) (~> 2.8)
 
 - <a name="requirement_random"></a> [random](#requirement\_random) (~> 3.5)
 

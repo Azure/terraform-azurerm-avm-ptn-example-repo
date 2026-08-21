@@ -6,7 +6,7 @@ This example will not be run as an e2e test as it has the .e2eignore file in the
 
 ```hcl
 terraform {
-  required_version = "~> 1.5"
+  required_version = ">= 1.9, < 2.0"
 
   required_providers {
     azapi = {
@@ -48,10 +48,7 @@ resource "azapi_resource" "this" {
   tags     = { test = "test" }
 }
 
-# This is the module call
-# Do not specify location here due to the randomization above.
-# Leaving location as `null` will cause the module to use the resource group location
-# with a data source.
+# This is the module call.
 module "test" {
   source = "../../"
 
@@ -59,7 +56,7 @@ module "test" {
   # source             = "Azure/avm-<res/ptn>-<name>/azurerm"
   # ...
   location         = azapi_resource.this.location
-  name             = "TODO" # TODO update with module.naming.<RESOURCE_TYPE>.name_unique
+  name             = module.naming.virtual_network.name_unique
   parent_id        = azapi_resource.this.id
   enable_telemetry = var.enable_telemetry # see variables.tf
 }
@@ -70,7 +67,7 @@ module "test" {
 
 The following requirements are needed by this module:
 
-- <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (~> 1.5)
+- <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) (>= 1.9, < 2.0)
 
 - <a name="requirement_azapi"></a> [azapi](#requirement\_azapi) (~> 2.8)
 
