@@ -197,8 +197,12 @@ jobs:
           SELECTED_COUNT=$(wc -l < selected.txt | tr -d ' ')
           echo "selected_count=${SELECTED_COUNT}" >> "${GITHUB_OUTPUT}"
 
-          # 30 AI Credits is the midpoint of observed triage runs (22-45 AIC).
-          ESTIMATED_AIC=$(( SELECTED_COUNT * 30 ))
+          # 45 AI Credits is the mean of triage runs measured on this workflow.
+          # The spread is wide — two ring-0 runs on 2026-08-20 cost 24.1 and 65.0
+          # — because cost tracks how many duplicate and pull request candidates
+          # the agent has to open and read, so a repository with a dense backlog
+          # sits at the high end. Treat the total as an order of magnitude.
+          ESTIMATED_AIC=$(( SELECTED_COUNT * 45 ))
 
           {
             echo "## Issue triage backfill plan"
