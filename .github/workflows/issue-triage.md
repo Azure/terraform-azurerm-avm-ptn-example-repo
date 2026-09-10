@@ -43,6 +43,400 @@ features:
 engine:
   model: claude-sonnet-5
 safe-outputs:
+  runs-on: ubuntu-latest
+  needs: [triage_evidence]
+  data:
+    type: object
+    additionalProperties: false
+    properties:
+      version:
+        type: integer
+      fixing_pr:
+        type: integer
+        minimum: 0
+      fix_confidence:
+        type: string
+        enum: [none, confirmed, related, partial]
+      release_action:
+        type: string
+        enum: [none, evaluate_fix]
+      human_reopen_override:
+        type: boolean
+      screening_complete:
+        type: boolean
+      fully_inspected_prs:
+        type: array
+        items:
+          type: integer
+          minimum: 1
+      screened_inventory_prs:
+        type: array
+        items:
+          type: integer
+          minimum: 1
+      findings:
+        type: string
+      audit:
+        type: string
+    required: [version, fixing_pr, fix_confidence, release_action, human_reopen_override, screening_complete, fully_inspected_prs, screened_inventory_prs, findings, audit]
+  steps:
+  - name: Prepare private triage gate directory
+    id: triage-gate-directory
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+    with:
+      script: |
+        const fs = require('fs');
+        const path = require('path');
+        const directory = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'triage-gate-'));
+        fs.chmodSync(directory, 0o700);
+        core.setOutput('path', directory);
+  - name: Download trusted triage evidence independently
+    continue-on-error: true
+    uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+    with:
+      artifact-ids: ${{ needs.triage_evidence.outputs.artifact_id }}
+      path: ${{ steps.triage-gate-directory.outputs.path }}/evidence
+      merge-multiple: true
+  - name: Enforce triage release gate
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+    env:
+      GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
+      TRIAGE_GATE_DIRECTORY: ${{ steps.triage-gate-directory.outputs.path }}
+      TRIAGE_ARTIFACT_ID: ${{ needs.triage_evidence.outputs.artifact_id }}
+      TRIAGE_MANIFEST_SHA256: ${{ needs.triage_evidence.outputs.manifest_sha256 }}
+      TRIAGE_PRODUCER_ATTEMPT: ${{ needs.triage_evidence.outputs.producer_attempt }}
+      TRIAGE_REPOSITORY: ${{ github.repository }}
+      TRIAGE_ISSUE: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      TRIAGE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      script: |
+        // This code runs on the trusted output runner, not inside the agent.
+        const fs = require('fs');
+        const path = require('path');
+        const crypto = require('crypto');
+        const { execFileSync } = require('child_process');
+        const runtimeDirectory = path.join(process.env.RUNNER_TEMP, 'gh-aw', 'actions');
+        const directory = process.env.TRIAGE_GATE_DIRECTORY;
+        const evidenceDirectory = path.join(directory, 'evidence');
+        const outputPath = process.env.GH_AW_AGENT_OUTPUT;
+        const proofPath = path.join(directory, 'selected-pr-release-status.json');
+        const repository = process.env.TRIAGE_REPOSITORY;
+        const issue = Number(process.env.TRIAGE_ISSUE);
+        const positive = n => Number.isSafeInteger(n) && n > 0;
+        const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+        if (!positive(issue) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !outputPath)
+          throw new Error('Invalid trusted gate context');
+        const report = { version: 1, proof_origin: 'on_demand', authorization_only: true, proposed_pr: null, in_initial_index: null,
+          fresh_status: 'unknown', fresh_reason: null, release_tag: null, requested: [], authorized: [], blocked: [], reasons: [] };
+        const block = reason => { if (!report.reasons.includes(reason)) report.reasons.push(reason); };
+        function readFile(file) {
+          try {
+            if (!fs.lstatSync(file).isFile()) return null;
+            return fs.readFileSync(file);
+          } catch (error) {
+            if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) return null;
+            throw error;
+          }
+        }
+        function parse(bytes) {
+          if (bytes === null) return null;
+          try { return JSON.parse(bytes.toString('utf8')); }
+          catch (error) { if (error instanceof SyntaxError) return null; throw error; }
+        }
+        const original = parse(readFile(outputPath));
+        const envelope = object(original) ? original : {};
+        const items = Array.isArray(envelope.items) ? envelope.items : [];
+        // Quarantine all requests before loading optional runtime code or doing
+        // proof work. An unexpected failure both fails this step (blocking native
+        // dispatch) and leaves no original unsafe request file to replay.
+        const quarantine = outputPath + '.triage-quarantine';
+        fs.writeFileSync(quarantine, JSON.stringify({ ...envelope, items: [] }));
+        fs.renameSync(quarantine, outputPath);
+        const { normalizeIssueIntentLabelInputs } = require(path.join(runtimeDirectory, 'issue_intents.cjs'));
+        const { validateLabels } = require(path.join(runtimeDirectory, 'safe_output_validator.cjs'));
+        let protocolViolation = !object(original) || !Array.isArray(envelope.items);
+        if (protocolViolation) block('invalid_output_envelope');
+        // Preserve ingestion errors and every envelope field; never erase taint or
+        // temporary-ID maps to make a rejected decision look high-integrity.
+        if (envelope.errors !== undefined && (!Array.isArray(envelope.errors) || envelope.errors.length > 0)) {
+          protocolViolation = true; block('ingestion_errors');
+        }
+        const fixedFiles = ['repo-labels.json', 'issue-number.txt', 'issue-type.txt', 'issue-state-history.json', 'pr-candidate-status.json', 'pr-candidate-screening-index.json', 'issue-candidate-index.json', 'triage-audit-block.md', 'triage-screening-status.md', 'pr-evidence-validation.json', 'release-status.json', 'triage-release-proof.sh'];
+        const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+        const manifestBytes = readFile(path.join(evidenceDirectory, 'triage-evidence-manifest.json'));
+        const manifest = parse(manifestBytes);
+        const evidence = {};
+        const producerAttempt = process.env.TRIAGE_PRODUCER_ATTEMPT;
+        const consumerAttempt = process.env.GITHUB_RUN_ATTEMPT;
+        const validAttempt = value => /^[1-9][0-9]*$/.test(value || '') && positive(Number(value));
+        let trusted = /^[1-9][0-9]*$/.test(process.env.TRIAGE_ARTIFACT_ID || '') &&
+          /^[a-f0-9]{64}$/.test(process.env.TRIAGE_MANIFEST_SHA256 || '') && manifestBytes !== null &&
+          hash(manifestBytes) === process.env.TRIAGE_MANIFEST_SHA256 && object(manifest) &&
+          manifest.version === 1 && manifest.repository === repository && manifest.issue_number === String(issue) &&
+          manifest.run_id === process.env.GITHUB_RUN_ID && validAttempt(producerAttempt) && validAttempt(consumerAttempt) &&
+          manifest.run_attempt === producerAttempt && Number(consumerAttempt) >= Number(producerAttempt) &&
+          manifest.workflow_sha === process.env.TRIAGE_WORKFLOW_SHA && typeof manifest.default_branch === 'string' &&
+          manifest.default_branch.length > 0 && object(manifest.files) &&
+          Object.keys(manifest.files).length === fixedFiles.length;
+        if (trusted) {
+          for (const name of fixedFiles) {
+            const bytes = readFile(path.join(evidenceDirectory, name));
+            if (bytes === null || hash(bytes) !== manifest.files[name]) { trusted = false; break; }
+            evidence[name] = bytes;
+          }
+        }
+        if (trusted && evidence['issue-number.txt'].toString('utf8').trim() !== String(issue)) trusted = false;
+        if (!trusted) block('trusted_evidence_unavailable');
+        const json = name => trusted ? parse(evidence[name]) : null;
+        const status = json('pr-candidate-status.json');
+        const index = json('pr-candidate-screening-index.json');
+        const validation = json('pr-evidence-validation.json');
+        const history = json('issue-state-history.json');
+        const duplicateIndex = json('issue-candidate-index.json');
+        const numbers = a => Array.isArray(a) && a.every(positive) && new Set(a).size === a.length;
+        const initial = object(index) && Array.isArray(index.required_inspection) && Array.isArray(index.open_inventory_screening)
+          ? [...index.required_inspection, ...index.open_inventory_screening] : [];
+        const contracts = trusted && validation?.valid === true && [status, index].every(v =>
+          object(v) && v.loaded === true && v.complete === true && v.success === true && Array.isArray(v.errors) && v.errors.length === 0) &&
+          index.version === 1 && status.index_version === 1 && numbers(initial.map(p => p?.number)) &&
+          status.candidate_count === initial.length && index.candidate_count === initial.length;
+        const historyLoaded = trusted && history?.loaded === true && Array.isArray(history.events) &&
+          history.events.every(e => object(e) && ['closed', 'reopened'].includes(e.event) &&
+            typeof e.created_at === 'string' && object(e.actor) && typeof e.actor.type === 'string' && typeof e.actor.login === 'string');
+        const duplicateEvidence = trusted && duplicateIndex?.version === 1 && duplicateIndex.loaded === true &&
+          duplicateIndex.complete === true && duplicateIndex.success === true && Array.isArray(duplicateIndex.errors) &&
+          duplicateIndex.errors.length === 0 && evidence['triage-audit-block.md'].toString('utf8').startsWith('- Prefetched duplicate searches (from `issue-candidate-index.json`):');
+        const targetKeys = ['item_number', 'issue_number', 'pr_number', 'pr-number', 'pull_number', 'pull_request_number', 'number'];
+        const routingKeys = ['comment_id', 'commentId', 'comment-id', 'reply_to_id', 'target', 'discussion_number', 'discussion_id', 'pull_request_review_id', 'review_id'];
+        function target(item, key, expected = issue) {
+          return item[key] === expected && targetKeys.every(k => item[k] === undefined || item[k] === expected) &&
+            routingKeys.every(k => item[k] === undefined) &&
+            (item.repo === undefined || item.repo === repository) &&
+            (item.repository === undefined || item.repository === repository);
+        }
+        const comments = items.filter(i => object(i) && i.type === 'add_comment');
+        const comment = comments.length === 1 && target(comments[0], 'item_number') ? comments[0] : null;
+        const fields = ['version', 'fixing_pr', 'fix_confidence', 'release_action', 'human_reopen_override', 'screening_complete', 'fully_inspected_prs', 'screened_inventory_prs', 'findings', 'audit'];
+        const data = comment?.data;
+        const validData = object(data) && Object.keys(data).length === fields.length && fields.every(k => Object.hasOwn(data, k)) &&
+          data.version === 1 && Number.isSafeInteger(data.fixing_pr) && data.fixing_pr >= 0 &&
+          ['none', 'confirmed', 'related', 'partial'].includes(data.fix_confidence) && ['none', 'evaluate_fix'].includes(data.release_action) &&
+          typeof data.human_reopen_override === 'boolean' && typeof data.screening_complete === 'boolean' &&
+          numbers(data.fully_inspected_prs) && numbers(data.screened_inventory_prs) &&
+          data.fully_inspected_prs.length <= 10000 && data.screened_inventory_prs.length <= 10000 &&
+          typeof data.findings === 'string' && data.findings.length <= 12000 && typeof data.audit === 'string' && data.audit.length <= 20000;
+        if (!validData) block('missing_or_invalid_decision');
+        if (comments.length > 1 || items.some(i => object(i) && i.type !== 'add_comment' && i.data !== undefined)) {
+          protocolViolation = true; block('multiple_or_misplaced_decisions');
+        }
+        const wantsRelease = validData && data.release_action === 'evaluate_fix';
+        if (validData) {
+          report.proposed_pr = data.fixing_pr || null;
+          report.in_initial_index = trusted ? initial.some(p => p.number === data.fixing_pr) : null;
+        }
+        if (wantsRelease) report.requested.push('evaluate_fix');
+        const coverage = contracts && validData && data.screening_complete &&
+          initial.filter(p => index.required_inspection.includes(p) || p.lexical_relevance?.plausible === true)
+            .every(p => data.fully_inspected_prs.includes(p.number)) &&
+          initial.filter(p => p.open_inventory || p.merged_inventory).every(p => data.screened_inventory_prs.includes(p.number));
+        // An explicit human-reopen veto can only restrict actions, so retain it
+        // even when another field made that comment's decision invalid.
+        const humanVeto = comments.some(i => i.data?.human_reopen_override === true);
+        // Without a structured finding, an ambiguous bot-close/human-reopen
+        // history cannot be used to approve even the independent duplicate route.
+        let botClosed = false;
+        const ambiguousReopen = historyLoaded && history.events.some(e => {
+          if (e.event === 'closed' && e.actor.type === 'Bot') botClosed = true;
+          return botClosed && e.event === 'reopened' && e.actor.type === 'User';
+        });
+        const closureVeto = !historyLoaded || humanVeto || (!validData && ambiguousReopen);
+        if (!historyLoaded) block('history_unavailable');
+        if (humanVeto || (!validData && ambiguousReopen)) block('human_reopen_override');
+        const fixed = 'Status: Fixed :white_check_mark:';
+        const awaiting = 'Status: Awaiting Release To Be Cut :scissors:';
+        const reserved = new Set([fixed.toLowerCase(), awaiting.toLowerCase()]);
+        const definitions = json('repo-labels.json');
+        const labels = Array.isArray(definitions) ? definitions.filter(l => object(l) && typeof l.name === 'string').map(l => l.name) : [];
+        function effectiveLabel(label) {
+          // Match both native object-name sanitization and the validator's second
+          // sanitization/64-character limit. Merely trim/lowercase is insufficient.
+          try {
+            // Rationale/confidence do not change the effective label name. Do
+            // not let malformed metadata hide a raw reserved-name attempt.
+            const nameOnly = object(label) ? { name: label.name } : label;
+            const input = normalizeIssueIntentLabelInputs([nameOnly]).map(l => typeof l === 'string' ? l : l.name);
+            const result = validateLabels(input, undefined, 10);
+            return result.valid && result.value.length === 1 ? result.value[0] : null;
+          } catch (error) {
+            if (error instanceof Error && error.message.startsWith('Invalid labels')) return null;
+            if (error instanceof Error && error.message.startsWith('Label removal')) return null;
+            throw error;
+          }
+        }
+        const approved = [];
+        const duplicates = [];
+        const prMetadataKeys = ['temporary_id', 'tainted', 'taint', 'integrity'];
+        const prAppendKeys = new Set(['type', 'pull_request_number', 'operation', 'body', 'repo', 'repository', ...targetKeys, ...prMetadataKeys]);
+        let typeCount = 0, labelCount = 0, prCount = 0;
+        for (const item of items) {
+          if (!object(item)) { protocolViolation = true; block('invalid_item'); continue; }
+          if (item.type === 'add_comment') continue;
+          if (item.type === 'close_issue') {
+            report.requested.push('close_issue');
+            if (item.state_reason !== 'duplicate') {
+              protocolViolation = true; block('raw_completion_or_invalid_reason'); report.blocked.push('close_issue'); continue;
+            }
+            if (!target(item, 'issue_number') || !positive(item.duplicate_of) || item.duplicate_of === issue) {
+              protocolViolation = true; block('invalid_duplicate_target'); report.blocked.push('close_issue'); continue;
+            }
+            duplicates.push(item);
+          } else if (item.type === 'add_labels') {
+            if (!Array.isArray(item.labels)) { protocolViolation = true; block('invalid_labels'); continue; }
+            const kept = [];
+            for (const label of item.labels) {
+              const name = effectiveLabel(label);
+              if (name && reserved.has(name.toLowerCase())) {
+                protocolViolation = true; block('raw_release_label'); report.blocked.push(name);
+              } else if (name && labels.some(l => l.toLowerCase() === name.toLowerCase())) kept.push(label);
+              else block('label_not_defined');
+            }
+            if (!target(item, 'item_number')) { protocolViolation = true; block('invalid_target'); continue; }
+            if (kept.length && labelCount++ < 10) approved.push({ ...item, labels: kept });
+          } else if (item.type === 'set_issue_type') {
+            if (target(item, 'issue_number') && ['Bug', 'Feature', 'Task'].includes(item.issue_type) && typeCount++ < 1) approved.push(item);
+            else { protocolViolation = true; block('invalid_type_or_target'); }
+          } else if (item.type === 'update_pull_request') {
+            // Native handlers accept extra mutation fields despite append-only configuration. Reject extras and rebuild the request rather than forwarding it.
+            if (Object.keys(item).some(key => !prAppendKeys.has(key))) {
+              block('pr_append_extra_fields'); report.blocked.push('update_pull_request'); continue;
+            }
+            if (coverage && positive(item.pull_request_number) && target(item, 'pull_request_number', item.pull_request_number) &&
+                item.operation === 'append' && item.body === `Fixes #${issue}` && validData &&
+                data.fix_confidence === 'confirmed' && data.fixing_pr === item.pull_request_number &&
+                data.fully_inspected_prs.includes(item.pull_request_number) && prCount++ < 1) {
+              const metadata = Object.fromEntries(prMetadataKeys.filter(key => Object.hasOwn(item, key)).map(key => [key, item[key]]));
+              approved.push({ ...metadata, type: 'update_pull_request', repo: repository,
+                pull_request_number: item.pull_request_number, operation: 'append', body: `Fixes #${issue}` });
+            }
+            else { block('pr_link_veto'); report.blocked.push('update_pull_request'); }
+          } else {
+            // No alternative close/update/custom path may reach native dispatch.
+            protocolViolation = true; block('unsupported_output'); report.blocked.push(String(item.type));
+          }
+        }
+        if (duplicates.length > 1 || (duplicates.length && wantsRelease)) {
+          protocolViolation = true; block('conflicting_dispositions');
+        }
+        if (duplicates.length && !duplicateEvidence) block('duplicate_evidence_unavailable');
+        if (duplicates.length === 1 && !closureVeto && !protocolViolation && duplicateEvidence) {
+          const item = duplicates[0];
+          approved.push({ ...item, body: `Duplicate of #${item.duplicate_of}` });
+        } else if (duplicates.length) report.blocked.push('duplicate_closure');
+        // Write an honest final-proof artifact even when no lookup can be admitted.
+        let proof = { version: 1, loaded: false, has_release: null, latest_tag: null, latest_published_at: null,
+          reason: 'not_requested_or_vetoed', prs: [] };
+        fs.writeFileSync(proofPath, JSON.stringify(proof));
+        const selected = wantsRelease && positive(data.fixing_pr) && data.fix_confidence === 'confirmed' &&
+          data.fully_inspected_prs.includes(data.fixing_pr);
+        if (wantsRelease && !selected) block('invalid_fix_selection');
+        if (wantsRelease && !coverage) block('incomplete_collection_or_screening');
+        if (selected && coverage && !protocolViolation && !closureVeto) {
+          // Fixed executable and argument vector; no model text becomes shell source.
+          try {
+            execFileSync('/bin/bash', [path.join(evidenceDirectory, 'triage-release-proof.sh'), 'selected',
+              evidenceDirectory, proofPath, String(data.fixing_pr)], {
+              env: { ...process.env, GH_AW_GITHUB_REPOSITORY: repository, DEFAULT_BRANCH: manifest.default_branch },
+              timeout: 205000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']
+            });
+          } catch (error) {
+            if (!Number.isInteger(error.status) && error.code !== 'ETIMEDOUT' && error.code !== 'ENOENT') throw error;
+            block('selected_verifier_failed');
+            fs.writeFileSync(proofPath, JSON.stringify({ ...proof, reason: 'selected_verifier_failed' }));
+          }
+          proof = parse(readFile(proofPath));
+          const entry = object(proof) && proof.version === 1 && proof.loaded === true && proof.has_release === true &&
+            Array.isArray(proof.prs) && proof.prs.length === 1 && proof.prs[0]?.number === data.fixing_pr ? proof.prs[0] : null;
+          if (entry && ['released', 'awaiting_release', 'unknown'].includes(entry.status) && typeof entry.reason === 'string') {
+            report.fresh_status = entry.status;
+            report.fresh_reason = entry.reason;
+            if (entry.status === 'released' && typeof entry.release_tag === 'string' && /^[^\s]+$/.test(entry.release_tag)) {
+              report.release_tag = entry.release_tag;
+              // Carry the decision's integrity metadata, not its comment target,
+              // data, temporary ID, or agent-written action body into generated items.
+              const metadata = { ...comment };
+              for (const key of [...targetKeys, ...routingKeys, 'type', 'body', 'data', 'temporary_id', 'labels', 'state_reason', 'duplicate_of']) delete metadata[key];
+              if (labels.includes(fixed)) {
+                approved.push({ ...metadata, type: 'close_issue', issue_number: issue, state_reason: 'completed',
+                  body: `Fixed by PR #${data.fixing_pr}. Released in ${entry.release_tag}.\n\nIf this is still happening on ${entry.release_tag} or later, please reopen with your module version and a configuration snippet.` });
+                approved.push({ ...metadata, type: 'add_labels', item_number: issue, labels: [fixed] });
+              } else block('fixed_label_not_defined');
+            } else if (entry.status === 'awaiting_release' && entry.release_tag === null) {
+              if (labels.includes(awaiting)) {
+                const metadata = { ...comment };
+                for (const key of [...targetKeys, ...routingKeys, 'type', 'body', 'data', 'temporary_id', 'labels', 'state_reason', 'duplicate_of']) delete metadata[key];
+                approved.push({ ...metadata, type: 'add_labels', item_number: issue, labels: [awaiting] });
+              } else block('awaiting_label_not_defined');
+            } else { report.fresh_status = 'unknown'; block('release_membership_unverified'); }
+          } else { report.fresh_status = 'unknown'; block('invalid_or_missing_selected_proof'); }
+        }
+        // Prioritize a synthesized release label within the existing native
+        // ten-batch limit; never increase the limit or combine items' taint.
+        const generatedLabel = approved.findIndex(i => i.type === 'add_labels' && i.labels.some(l => [fixed, awaiting].includes(l)));
+        if (generatedLabel >= 0) approved.unshift(...approved.splice(generatedLabel, 1));
+        let retainedLabels = 0;
+        for (let i = 0; i < approved.length; i++) {
+          if (approved[i].type === 'add_labels' && ++retainedLabels > 10) {
+            approved.splice(i--, 1); block('native_label_batch_limit');
+          }
+        }
+        // Missing/malformed helper output still leaves an independently uploaded
+        // final proof artifact, explicitly unknown rather than an absent file.
+        if (!object(proof)) {
+          proof = { version: 1, loaded: false, has_release: null, latest_tag: null, latest_published_at: null,
+            reason: 'invalid_or_missing_selected_proof', prs: [] };
+          fs.writeFileSync(proofPath, JSON.stringify(proof));
+        }
+        report.authorized = approved.map(i => i.type === 'close_issue' ? `close_issue:${i.state_reason}` :
+          i.type === 'add_labels' ? `add_labels:${i.labels.map(effectiveLabel).join(', ')}` : i.type);
+        if (wantsRelease && !approved.some(i => i.type === 'close_issue' && i.state_reason === 'completed')) report.blocked.push('completed_closure');
+        const actionLines = [];
+        if (report.release_tag) actionLines.push(`Trusted release verification found PR #${report.proposed_pr} in release ${report.release_tag}.`);
+        else if (report.fresh_status === 'awaiting_release') actionLines.push(`Trusted release verification found PR #${report.proposed_pr} on the default branch. Every published stable release precedes its merge result; no published stable release contains it. Awaiting-release labeling is authorized only as listed below.`);
+        else if (wantsRelease) actionLines.push(`Release membership for PR #${report.proposed_pr || '(invalid selection)'} could not be verified. This run does not authorize completed closure or either release label; absence from the initial list is not evidence of an unreleased fix.`);
+        if (!validData) actionLines.push('The mandatory structured triage decision was missing or invalid. The original comment body is not an authorization record and was not published.');
+        actionLines.push(`Requested: ${report.requested.join(', ') || 'no release or closure request'}.`);
+        actionLines.push(`Authorized native requests: ${report.authorized.join('; ') || 'none'}.`);
+        if (report.reasons.length) actionLines.push(`Blocked or unavailable: ${report.reasons.join(', ')}.`);
+        if (!approved.some(i => i.type === 'close_issue')) actionLines.push('No automated closure is authorized; the issue is to remain open for review.');
+        actionLines.push('Authorization is not execution: native handlers run next, and comment, label, type, PR-link and close operations are not atomic. Their results record what GitHub accepted.');
+        // Deliberately never reuse or regex-edit the agent's old free-form body.
+        const semantic = validData ? `\n### Agent semantic findings (not an execution record)\n\n${data.findings}\n` : '';
+        const audit = trusted ? evidence['triage-audit-block.md'].toString('utf8') + '\n' + evidence['triage-screening-status.md'].toString('utf8') : 'Trusted evidence snapshot unavailable.';
+        const duplicateNote = approved.some(i => i.type === 'close_issue' && i.state_reason === 'duplicate') ?
+          '\n> **Note:** If you believe this issue was incorrectly closed as a duplicate, please reopen it and explain how it differs from the linked issue.\n' : '';
+        const body = '## 🤖 GitHub Agentic Workflow Automated Triage 🤖\n\n> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._\n\n' +
+          actionLines.map(l => '- ' + l).join('\n') + '\n' + semantic + duplicateNote +
+          '\n<details>\n<summary><b>🔎 What this triage looked at</b></summary>\n\n' + audit +
+          (validData ? `\nAgent-reported sources and verdicts:\n${data.audit}\n\nDeclared fully inspected PRs: ${data.fully_inspected_prs.join(', ') || 'none'}.\nDeclared screened inventory PRs: ${data.screened_inventory_prs.join(', ') || 'none'}.\n` : '\n') + '\n</details>';
+        const rendered = { ...(comment || comments[0] || {}), type: 'add_comment', item_number: issue, body };
+        for (const key of [...targetKeys.filter(k => k !== 'item_number'), ...routingKeys, 'repo', 'repository']) delete rendered[key];
+        // Fallback comments retain a valid original item's taint and temporary ID.
+        // A generated comment never clears envelope-level integrity information.
+        fs.writeFileSync(path.join(directory, 'triage-gate-report.json'), JSON.stringify(report, null, 2));
+        const replacement = { ...envelope, items: [rendered, ...approved] };
+        const temporary = outputPath + '.triage-gated';
+        fs.writeFileSync(temporary, JSON.stringify(replacement));
+        fs.renameSync(temporary, outputPath);
+  - name: Upload triage gate authorization report
+    uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+    with:
+      name: triage-gate-report-${{ github.run_id }}-${{ github.run_attempt }}
+      path: |
+        ${{ steps.triage-gate-directory.outputs.path }}/triage-gate-report.json
+        ${{ steps.triage-gate-directory.outputs.path }}/selected-pr-release-status.json
+      if-no-files-found: error
+      overwrite: false
   add-comment:
     max: 1
     target: "*"
@@ -88,6 +482,1184 @@ safe-outputs:
     steps:
     - name: Force Copilot CLI download (workaround github/gh-aw#52327)
       run: sudo rm -rf /opt/hostedtoolcache/copilot-cli || true
+jobs:
+  triage_evidence:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload-triage-evidence.outputs.artifact-id }}
+      manifest_sha256: ${{ steps.seal-triage-evidence.outputs.sha256 }}
+      producer_attempt: ${{ steps.seal-triage-evidence.outputs.producer_attempt }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+    - name: Fetch label definitions
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        mkdir -p /tmp/gh-aw/agent
+        LABELS_FILE=/tmp/gh-aw/agent/repo-labels.json
+        gh api "repos/${GH_AW_GITHUB_REPOSITORY}/labels?per_page=100" | jq '[.[] | {name, description}]' > "$LABELS_FILE" || echo '[]' > "$LABELS_FILE"
+    - name: Resolve target issue number
+      env:
+        ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      run: |
+        echo "${ISSUE_NUMBER}" > /tmp/gh-aw/agent/issue-number.txt
+    - name: Fetch current issue type
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      run: |
+        set -o pipefail
+        TYPE_FILE=/tmp/gh-aw/agent/issue-type.txt
+        RAW=$(mktemp)
+        # The agent's issue-reading tool does not return the native issue type, and
+        # the `Type: …` labels and the template's "### Issue Type?" field are not it.
+        if gh api "repos/${GH_AW_GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" \
+          --jq '.type.name // "NONE"' > "${RAW}"; then
+          tr -d '\r' < "${RAW}" | head -n 1 > "${TYPE_FILE}"
+        else
+          echo "UNKNOWN" > "${TYPE_FILE}"
+        fi
+        rm -f "${RAW}"
+    - name: Fetch issue close and reopen history
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      run: |
+        set -o pipefail
+        HISTORY_FILE=/tmp/gh-aw/agent/issue-state-history.json
+        EVENTS_FILE=$(mktemp)
+        if gh api --paginate "repos/${GH_AW_GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/events?per_page=100" \
+          | jq -s '[.[][] | select(.event == "closed" or .event == "reopened") | {
+              event,
+              created_at,
+              actor: {
+                login: .actor.login,
+                type: .actor.type
+              }
+            }]' > "${EVENTS_FILE}"; then
+          jq -n --slurpfile events "${EVENTS_FILE}" '{loaded: true, events: $events[0]}' > "${HISTORY_FILE}"
+        else
+          echo '{"loaded":false,"events":[]}' > "${HISTORY_FILE}"
+        fi
+        rm -f "${EVENTS_FILE}"
+    - name: Prefetch PR candidate evidence for target issue
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      run: |
+        set -o pipefail
+        mkdir -p /tmp/gh-aw/agent
+        STATUS_FILE=/tmp/gh-aw/agent/pr-candidate-status.json
+        INDEX_FILE=/tmp/gh-aw/agent/pr-candidate-screening-index.json
+        INDEX_VERSION=1
+        REPO="${GH_AW_GITHUB_REPOSITORY}"
+        NUM="${ISSUE_NUMBER}"
+        write_failure_contracts() {
+          FAILURE_MESSAGE="$1"
+          jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "${FAILURE_MESSAGE}" --argjson version "${INDEX_VERSION}" \
+            '{
+              version:$version,
+              issue_number:($issue | tonumber? // $issue),
+              repository:$repo,
+              loaded:false,
+              complete:false,
+              success:false,
+              errors:[$error],
+              candidate_count:0,
+              required_inspection:[],
+              open_inventory_screening:[]
+            }' > "${INDEX_FILE}"
+          jq -n \
+            --arg issue "${NUM}" \
+            --arg repo "${REPO}" \
+            --arg error "${FAILURE_MESSAGE}" \
+            --arg index_path "${INDEX_FILE}" \
+            --argjson index_version "${INDEX_VERSION}" \
+            '{
+              issue_number:($issue | tonumber? // $issue),
+              repository:$repo,
+              loaded:false,
+              complete:false,
+              success:false,
+              errors:[$error],
+              candidate_count:0,
+              open_inventory_count:0,
+              merged_inventory_count:0,
+              required_inspection_count:0,
+              required_inspection_numbers:[],
+              exact_required_inspection_count:0,
+              exact_required_inspection_numbers:[],
+              timeline_required_inspection_count:0,
+              timeline_required_inspection_numbers:[],
+              commit_required_inspection_count:0,
+              commit_required_inspection_numbers:[],
+              screening_index_path:$index_path,
+              index_version:$index_version
+            }' > "${STATUS_FILE}"
+        }
+        if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+          || ! printf '%s' "${NUM}" | grep -Eq '^[1-9][0-9]*$'; then
+          write_failure_contracts "invalid repository or issue number"
+          exit 0
+        fi
+        WORK_DIR=$(mktemp -d)
+        CANDIDATES_JSONL="${WORK_DIR}/candidates.jsonl"
+        ERRORS_FILE="${WORK_DIR}/errors.txt"
+        : > "${CANDIDATES_JSONL}"
+        : > "${ERRORS_FILE}"
+        COMPLETE=true
+        # Conservative fallback written up front: if this step dies before the final
+        # write below, the agent still finds an honest "incomplete" file rather than a
+        # stale or missing one, so it never treats a failed load as a false success.
+        write_failure_contracts "prefetch step did not finish"
+        record_error() {
+          echo "$1" >> "${ERRORS_FILE}"
+          COMPLETE=false
+        }
+        ISSUE_RAW="${WORK_DIR}/issue.json"
+        if ! gh api "repos/${REPO}/issues/${NUM}" > "${ISSUE_RAW}" 2>>"${ERRORS_FILE}"; then
+          echo '{"title":"","body":""}' > "${ISSUE_RAW}"
+          record_error "issue metadata: gh api fetch failed for issue #${NUM}"
+        fi
+        # Source 1: issue timeline - cross-referenced PRs, including non-closing mentions.
+        TIMELINE_RAW="${WORK_DIR}/timeline.jsonl"
+        if gh api --paginate "repos/${REPO}/issues/${NUM}/timeline?per_page=100" > "${TIMELINE_RAW}" 2>>"${ERRORS_FILE}"; then
+          jq -c -s --arg repo "${REPO}" '
+            add // []
+            | .[]
+            | select(.event == "cross-referenced")
+            | (.source.issue? // empty)
+            | select(.repository_url == ("https://api.github.com/repos/" + $repo))
+            | select(.pull_request != null)
+            | {
+                number: .number,
+                title: .title,
+                url: .html_url,
+                state: (.state // "unknown" | ascii_upcase),
+                draft: (.draft // false),
+                merged: (.pull_request.merged_at != null),
+                body: (.body // ""),
+                source: "timeline_cross_reference",
+                detail: "Timeline cross-reference on the issue (includes non-closing mentions)"
+              }
+          ' "${TIMELINE_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "timeline: jq processing failed for issue #${NUM}"
+        else
+          record_error "timeline: gh api fetch failed for issue #${NUM}"
+        fi
+        # Sources 2-4: an exhaustive, paginated PR scan. It provides exact title/body
+        # matches and commit references across every PR state, plus a compact inventory
+        # of every currently open PR so reference-free fixes remain discoverable.
+        GRAPHQL_QUERY="${WORK_DIR}/pr-scan.graphql"
+        cat > "${GRAPHQL_QUERY}" <<'GRAPHQL_EOF'
+        query($owner: String!, $repo: String!, $endCursor: String) {
+          repository(owner: $owner, name: $repo) {
+            pullRequests(first: 50, after: $endCursor, states: [OPEN, CLOSED, MERGED], orderBy: {field: UPDATED_AT, direction: DESC}) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                number
+                title
+                url
+                state
+                isDraft
+                merged
+                body
+                commits(first: 100) {
+                  pageInfo { hasNextPage }
+                  nodes { commit { oid message } }
+                }
+                files(first: 30) {
+                  pageInfo { hasNextPage }
+                  nodes { path }
+                }
+                mergedAt
+              }
+            }
+          }
+        }
+        GRAPHQL_EOF
+        OWNER_NAME="${REPO%%/*}"
+        REPO_NAME="${REPO##*/}"
+        PR_SCAN_RAW="${WORK_DIR}/pr-scan.jsonl"
+        # Recently merged PRs are inventoried alongside open ones so an issue that was
+        # already fixed on the default branch can be recognised even when nothing in
+        # the issue references the fixing PR. Bounded by age and count to keep the
+        # candidate set reviewable on long-lived repositories.
+        MERGED_CUTOFF="$(date -u -d '180 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '1970-01-01T00:00:00Z')"
+        if gh api graphql --paginate -F query="@${GRAPHQL_QUERY}" -f owner="${OWNER_NAME}" -f repo="${REPO_NAME}" > "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}"; then
+          jq -c -s --arg num "${NUM}" --arg repo "${REPO}" --arg cutoff "${MERGED_CUTOFF}" '
+            ("#" + $num + "\\b") as $numRef
+            | ($repo + "#" + $num + "\\b") as $qualRef
+            | ("(?i)\\b(refs?|fixes?|closes?|resolves?)\\b[[:space:]]*#" + $num + "\\b") as $bodyRef
+            | [.[].data.repository.pullRequests.nodes[]?] as $prs
+            | (
+                [$prs[] | select((.merged == true) and ((.mergedAt // "") >= $cutoff))]
+                | sort_by(.mergedAt) | reverse | .[0:25]
+                | .[]
+                | {number:.number, title:.title, url:.url, state:.state, draft:.isDraft, merged:.merged, body:(.body // ""),
+                   source:"merged_pr_inventory", detail:"Recently merged PR; screen for a fix that already shipped on the default branch",
+                   file_names:[.files.nodes[]?.path], files_truncated:(.files.pageInfo.hasNextPage // false)}
+              ),
+              (
+              $prs[]
+            | . as $pr
+            | (
+                (if $pr.state == "OPEN" then
+                  [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""),
+                    source:"open_pr_inventory", detail:"Current open PR; screen title, body excerpt, and changed-file names for relevance",
+                    file_names:[$pr.files.nodes[]?.path], files_truncated:($pr.files.pageInfo.hasNextPage // false)}]
+                else [] end)
+                +
+                (if (($pr.title // "") | test($numRef) or (($pr.title // "") | test($qualRef))) then
+                  [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""), source:"issue_number_search_title", detail:("PR title contains #" + $num + " or a repo-qualified reference")}]
+                else [] end)
+                +
+                (if (($pr.body // "") | test($numRef) or (($pr.body // "") | test($qualRef))) then
+                  [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""), source:"issue_number_search_body", detail:("PR body contains #" + $num + " or a repo-qualified reference")}]
+                else [] end)
+                +
+                [
+                  ($pr.commits.nodes[]? | .commit
+                   | select((.message | test($numRef)) or (.message | test($qualRef)))
+                   | {
+                       number: $pr.number, title: $pr.title, url: $pr.url, state: $pr.state, draft: $pr.isDraft, merged: $pr.merged, body: ($pr.body // ""),
+                       source: (if (.message | test($bodyRef)) then "commit_body_refs" else "commit_message_reference" end),
+                       sha: .oid, message: .message,
+                       detail: ("Commit message references #" + $num)
+                     }
+                  )
+                ]
+              )
+              | .[]
+              )
+          ' "${PR_SCAN_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "graphql pr scan: jq processing failed for issue #${NUM}"
+          TRUNCATED_COMMITS=$(jq -s '[.[].data.repository.pullRequests.nodes[]? | select(.commits.pageInfo.hasNextPage == true)] | length' "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}") \
+            || { TRUNCATED_COMMITS=1; record_error "graphql pr scan: jq commit-pagination check failed"; }
+          if [ "${TRUNCATED_COMMITS}" -gt 0 ]; then
+            record_error "graphql pr scan: ${TRUNCATED_COMMITS} PR(s) have more than 100 commits; commit-reference evidence is incomplete"
+          fi
+          LAST_HAS_NEXT=$(jq -s '[.[].data.repository.pullRequests.pageInfo.hasNextPage] | last // false' "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}")
+          if [ "${LAST_HAS_NEXT}" = "true" ]; then
+            record_error "graphql pr scan: pagination did not complete (hasNextPage still true) - results may be partial"
+          fi
+        else
+          record_error "graphql pr scan: gh api graphql fetch failed for repo ${REPO}"
+        fi
+        # Source 3: exact issue-number search across PR comments (all states, no date limit).
+        for VARIANT in "#${NUM}" "${REPO}#${NUM}"; do
+          SAFE_NAME=$(echo "${VARIANT}" | tr -c 'a-zA-Z0-9' '_')
+          COMMENT_SEARCH_RAW="${WORK_DIR}/comment-search-${SAFE_NAME}.jsonl"
+          if gh api --paginate --method GET search/issues -f q="repo:${REPO} is:pr in:comments \"${VARIANT}\"" > "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}"; then
+            jq -c -s '
+              [.[] | (.items // [])[]?]
+              | .[]
+              | {
+                  number: .number, title: .title, url: .html_url, state: (.state | ascii_upcase),
+                  draft: (.draft // false), merged: (.pull_request.merged_at != null),
+                  body: (.body // ""), source: "issue_number_search_comment",
+                  detail: "Matched via GitHub search in a PR comment"
+                }
+            ' "${COMMENT_SEARCH_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "comment search: jq processing failed for variant ${VARIANT}"
+            SEARCH_TOTAL=$(jq -s '[.[].total_count // 0] | max // 0' "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}") \
+              || { SEARCH_TOTAL=1; record_error "comment search: jq total-count check failed for variant ${VARIANT}"; }
+            SEARCH_COLLECTED=$(jq -s '[.[] | (.items // []) | length] | add // 0' "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}") \
+              || { SEARCH_COLLECTED=0; record_error "comment search: jq result-count check failed for variant ${VARIANT}"; }
+            if [ "${SEARCH_TOTAL}" -gt "${SEARCH_COLLECTED}" ]; then
+              record_error "comment search: GitHub search returned ${SEARCH_COLLECTED} of ${SEARCH_TOTAL} results for ${VARIANT} (1000-result cap or incomplete pagination)"
+            fi
+          else
+            record_error "comment search: gh api search fetch failed for variant ${VARIANT}"
+          fi
+        done
+        # Merge and de-dupe by PR number, preserving every source and its evidence so
+        # Step 6 can report related/partial PRs even when they are not linked.
+        if [ -s "${CANDIDATES_JSONL}" ]; then
+          jq -c -s '
+            group_by(.number)
+            | map({
+                number: .[0].number,
+                title: (first(.[] | select(.title != null and .title != "") | .title) // .[0].title),
+                url: (first(.[] | select(.url != null and .url != "") | .url) // .[0].url),
+                state: (first(.[] | select(.state != null and .state != "") | .state) // .[0].state),
+                draft: (any(.[]; .draft == true)),
+                merged: (any(.[]; .merged == true)),
+                body_excerpt: ((first(.[] | select(.body != null and .body != "") | .body) // "")[0:600]),
+                sources: ([.[] | .source] | unique),
+                file_names: ([.[] | .file_names[]?] | unique),
+                files_truncated: (any(.[]; .files_truncated == true)),
+                evidence: [.[] | {source, detail, sha, message} | with_entries(select(.value != null))]
+              })
+            | sort_by(.number)
+          ' "${CANDIDATES_JSONL}" > "${WORK_DIR}/deduped.json" 2>>"${ERRORS_FILE}" || record_error "dedupe: jq processing failed"
+        else
+          echo '[]' > "${WORK_DIR}/deduped.json"
+        fi
+        if [ ! -s "${WORK_DIR}/deduped.json" ]; then
+          echo '[]' > "${WORK_DIR}/deduped.json"
+        fi
+        CANDIDATE_COUNT=$(jq 'length' "${WORK_DIR}/deduped.json" 2>/dev/null || echo 0)
+        # Build a compact index for inventory screening, bounded so the agent never
+        # has to print a large file to enumerate candidates.
+        jq -n \
+          --arg issue "${NUM}" \
+          --arg repo "${REPO}" \
+          --argjson complete "${COMPLETE}" \
+          --argjson version "${INDEX_VERSION}" \
+          --slurpfile issue_data "${ISSUE_RAW}" \
+          --slurpfile candidates "${WORK_DIR}/deduped.json" \
+          --rawfile errorlog "${ERRORS_FILE}" \
+          '
+            def tokens:
+              ascii_downcase
+              | gsub("[^a-z0-9_]+"; " ")
+              | split(" ")
+              # Keep snake_case compounds whole and also emit their parts, so prose
+              # terms ("role assignment") can match identifiers ("role_assignments").
+              | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+              | flatten
+              | map(select(length >= 4))
+              | map(
+                  if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
+                  then .[0:-1]
+                  else .
+                  end
+                )
+              | . as $tokens
+              | [
+                  "about","above","across","after","again","against","already","also","although","always",
+                  "among","another","appear","applied","apply","available","because","before","being","below",
+                  "between","body","branch","change","changes","check","checked","clear","code","configuration",
+                  "continue","correlation","could","current","default","description","details","during","each",
+                  "error","example","existing","fails","from","github","have","having","include","issue","later",
+                  "main","make","module","more","need","needed","other","passes","please","provider","request",
+                  "resource","should","state","still","than","that","their","then","there","these","they","this",
+                  "through","type","update","using","value","version","when","where","which","while","with","would"
+                ] as $stop
+              | $tokens
+              | map(. as $token | select(($stop | index($token)) == null))
+              | unique;
+            def overlap($left; $right):
+              [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
+            # Filenames that appear in nearly every AVM PR carry no discovery signal.
+            def ubiquitous_file_tokens:
+              [
+                "changelog","example","footer","header","input","integration","license",
+                "locals","output","provider","readme","terraform","test","tftest","tfvars",
+                "unit","variable"
+              ];
+            def has_source($names): any(.sources[]?; . as $source | ($names | index($source)) != null);
+            def is_required:
+              has_source([
+                "timeline_cross_reference",
+                "issue_number_search_title",
+                "issue_number_search_body",
+                "issue_number_search_comment",
+                "commit_body_refs",
+                "commit_message_reference"
+              ]);
+            (($issue_data[0].title // "") | tokens) as $issue_title_tokens
+            | (($issue_data[0].body // "") | tokens) as $issue_body_tokens
+            | def compact_candidate:
+                . as $candidate
+                | (($candidate.title // "") | tokens) as $pr_title_tokens
+                | (($candidate.body_excerpt // "") | tokens) as $pr_body_tokens
+                | ([($candidate.file_names[]? // "") | tokens[]] | unique) as $pr_file_tokens
+                | overlap($issue_title_tokens; $pr_title_tokens) as $title_title
+                | overlap($issue_title_tokens; $pr_body_tokens) as $title_body
+                | overlap($issue_body_tokens; $pr_title_tokens) as $body_title
+                | overlap($issue_body_tokens; $pr_body_tokens) as $body_body
+                | overlap(($issue_title_tokens + $issue_body_tokens | unique); $pr_file_tokens) as $file_matches
+                | overlap($issue_title_tokens; $pr_file_tokens) as $title_file
+                | (
+                    $title_file
+                    | map(. as $token | select((ubiquitous_file_tokens | index($token)) == null))
+                  ) as $title_file_distinct
+                | (
+                    (($title_title | length) * 5)
+                    + (($title_body | length) * 3)
+                    + (($body_title | length) * 2)
+                    + ([($body_body | length), 4] | min)
+                    + (($file_matches | length) * 2)
+                    + (($title_file_distinct | length) * 3)
+                  ) as $score
+                | {
+                    number: $candidate.number,
+                    title: $candidate.title,
+                    sources: $candidate.sources,
+                    url: $candidate.url,
+                    state: $candidate.state,
+                    draft: $candidate.draft,
+                    merged: $candidate.merged,
+                    body_excerpt: (($candidate.body_excerpt // "")[0:280]),
+                    file_names: (($candidate.file_names // [])[0:12]),
+                    file_names_truncated: (
+                      ($candidate.files_truncated == true)
+                      or (($candidate.file_names // []) | length > 12)
+                    ),
+                    open_inventory: (($candidate.sources | index("open_pr_inventory")) != null),
+                    merged_inventory: (($candidate.sources | index("merged_pr_inventory")) != null),
+                    lexical_relevance: {
+                      version: 1,
+                      score: $score,
+                      plausible: (
+                        ($score >= 15)
+                        or (($title_title | length) >= 3)
+                        or (($title_file_distinct | length) >= 2)
+                      ),
+                      signals: {
+                        issue_title_to_pr_title: $title_title[0:10],
+                        issue_title_to_pr_body: $title_body[0:10],
+                        issue_body_to_pr_title: $body_title[0:10],
+                        issue_body_to_pr_body: $body_body[0:10],
+                        issue_identifiers_to_file_names: $file_matches[0:10],
+                        issue_title_to_file_names: $title_file_distinct[0:10]
+                      }
+                    }
+                  };
+            {
+              version: $version,
+              issue_number: ($issue | tonumber),
+              repository: $repo,
+              loaded: true,
+              complete: $complete,
+              success: $complete,
+              errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
+              candidate_count: ($candidates[0] | length),
+              open_inventory_count: ([$candidates[0][] | select(.sources | index("open_pr_inventory"))] | length),
+              merged_inventory_count: ([$candidates[0][] | select(.sources | index("merged_pr_inventory"))] | length),
+              required_inspection_count: ([$candidates[0][] | select(is_required)] | length),
+              required_inspection_numbers: ([$candidates[0][] | select(is_required) | .number] | unique | sort),
+              required_inspection: [
+                $candidates[0][] | select(is_required) | compact_candidate
+              ],
+              open_inventory_screening: [
+                $candidates[0][] | select(is_required | not) | compact_candidate
+              ]
+            }
+          ' > "${INDEX_FILE}" 2>>"${ERRORS_FILE}" || {
+            record_error "screening index: jq generation failed"
+            write_failure_contracts "screening index generation failed"
+            rm -rf "${WORK_DIR}"
+            exit 0
+          }
+        if ! jq -e --argjson expected "${CANDIDATE_COUNT}" '
+          (.version == 1)
+          and (.candidate_count == $expected)
+          and (.required_inspection_count == (.required_inspection | length))
+          and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort))
+          and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $expected)
+          and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $expected)
+          and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == .open_inventory_count)
+          and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == .merged_inventory_count)
+          and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory"))))
+          and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory"))))
+          and (all(.required_inspection[], .open_inventory_screening[];
+            (.body_excerpt | length) <= 280 and (.file_names | length) <= 12
+          ))
+        ' "${INDEX_FILE}" >/dev/null 2>>"${ERRORS_FILE}"; then
+          record_error "screening index: count, uniqueness, or partition invariant failed"
+          write_failure_contracts "screening index invariant failed"
+          rm -rf "${WORK_DIR}"
+          exit 0
+        fi
+        jq -n \
+          --arg issue "${NUM}" \
+          --arg repo "${REPO}" \
+          --arg index_path "${INDEX_FILE}" \
+          --argjson index_version "${INDEX_VERSION}" \
+          --argjson complete "${COMPLETE}" \
+          --slurpfile candidates "${WORK_DIR}/deduped.json" \
+          --rawfile errorlog "${ERRORS_FILE}" \
+          '
+            def numbers_with($sources):
+              [
+                $candidates[0][]
+                | select(any(.sources[]?; . as $source | ($sources | index($source)) != null))
+                | .number
+              ] | unique | sort;
+            (numbers_with([
+              "issue_number_search_title",
+              "issue_number_search_body",
+              "issue_number_search_comment"
+            ])) as $exact
+            | (numbers_with(["timeline_cross_reference"])) as $timeline
+            | (numbers_with(["commit_body_refs","commit_message_reference"])) as $commit
+            | (($exact + $timeline + $commit) | unique | sort) as $required
+            | (numbers_with(["open_pr_inventory"])) as $inventory
+            | (numbers_with(["merged_pr_inventory"])) as $merged_inventory
+            | {
+                issue_number: ($issue | tonumber),
+                repository: $repo,
+                loaded: true,
+                complete: $complete,
+                success: $complete,
+                errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
+                candidate_count: ($candidates[0] | length),
+                open_inventory_count: ($inventory | length),
+                merged_inventory_count: ($merged_inventory | length),
+                required_inspection_count: ($required | length),
+                required_inspection_numbers: $required,
+                exact_required_inspection_count: ($exact | length),
+                exact_required_inspection_numbers: $exact,
+                timeline_required_inspection_count: ($timeline | length),
+                timeline_required_inspection_numbers: $timeline,
+                commit_required_inspection_count: ($commit | length),
+                commit_required_inspection_numbers: $commit,
+                screening_index_path: $index_path,
+                index_version: $index_version
+              }
+          ' > "${STATUS_FILE}"
+        echo "PR candidate prefetch: candidates=${CANDIDATE_COUNT}, status=${STATUS_FILE}, index=${INDEX_FILE}, complete=${COMPLETE}"
+        rm -rf "${WORK_DIR}"
+    - name: Prefetch duplicate issue candidates for target issue
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+        ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+      run: |
+        set -o pipefail
+        mkdir -p /tmp/gh-aw/agent
+        INDEX_FILE=/tmp/gh-aw/agent/issue-candidate-index.json
+        INDEX_VERSION=1
+        REPO="${GH_AW_GITHUB_REPOSITORY}"
+        NUM="${ISSUE_NUMBER}"
+        write_failure_index() {
+          jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "$1" --argjson version "${INDEX_VERSION}" \
+            '{
+              version:$version,
+              issue_number:($issue | tonumber? // $issue),
+              repository:$repo,
+              loaded:false,
+              complete:false,
+              success:false,
+              errors:[$error],
+              query_count:0,
+              queries:[],
+              candidate_count:0,
+              open_candidate_count:0,
+              must_compare:[],
+              candidates:[]
+            }' > "${INDEX_FILE}"
+        }
+        if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+          || ! printf '%s' "${NUM}" | grep -Eq '^[1-9][0-9]*$'; then
+          write_failure_index "invalid repository or issue number"
+          exit 0
+        fi
+        WORK_DIR=$(mktemp -d)
+        ERRORS_FILE="${WORK_DIR}/errors.txt"
+        RESULTS_JSONL="${WORK_DIR}/results.jsonl"
+        QUERIES_JSONL="${WORK_DIR}/queries.jsonl"
+        QUERY_LIST="${WORK_DIR}/queries.txt"
+        : > "${ERRORS_FILE}"
+        : > "${RESULTS_JSONL}"
+        : > "${QUERIES_JSONL}"
+        : > "${QUERY_LIST}"
+        COMPLETE=true
+        # Conservative fallback written up front, matching the PR prefetch contract.
+        write_failure_index "duplicate prefetch step did not finish"
+        record_error() {
+          echo "$1" >> "${ERRORS_FILE}"
+          COMPLETE=false
+        }
+        ISSUE_RAW="${WORK_DIR}/issue.json"
+        if ! gh api "repos/${REPO}/issues/${NUM}" > "${ISSUE_RAW}" 2>>"${ERRORS_FILE}"; then
+          echo '{"title":"","body":""}' > "${ISSUE_RAW}"
+          record_error "issue metadata: gh api fetch failed for issue #${NUM}"
+        fi
+        # Derive search terms from the issue title with the same tokenizer the PR
+        # screening index uses: GitHub ANDs every term, so emit short broad pairs
+        # rather than one long precise query. The remedy-worded variants exist
+        # because the same gap is filed twice, once as a symptom and once as a
+        # feature request, and those two share almost no vocabulary.
+        jq -r '
+          def tokens:
+            ascii_downcase
+            | gsub("[^a-z0-9_]+"; " ")
+            | split(" ")
+            | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+            | flatten
+            | map(select(length >= 4))
+            | map(
+                if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
+                then .[0:-1]
+                else .
+                end
+              )
+            | . as $tokens
+            | [
+                "about","above","across","after","again","against","already","also","although","always",
+                "among","another","appear","applied","apply","available","because","before","being","below",
+                "between","body","branch","change","changes","check","checked","clear","code","configuration",
+                "continue","correlation","could","current","default","description","details","during","each",
+                "error","example","existing","fails","from","github","have","having","include","issue","later",
+                "main","make","module","more","need","needed","other","passes","please","provider","request",
+                "resource","should","state","still","than","that","their","then","there","these","they","this",
+                "through","type","update","using","value","version","when","where","which","while","with","would"
+              ] as $stop
+            | $tokens
+            | map(. as $token | select(($stop | index($token)) == null))
+            | unique;
+          ((.title // "") | tokens | sort_by(- length) | .[0:4]) as $top
+          | (
+              if ($top | length) >= 2
+              then [range(0; $top | length) as $i | range($i + 1; $top | length) as $j | ($top[$i] + " " + $top[$j])]
+              else $top
+              end
+            ) as $pairs
+          | (
+              $pairs
+              + (
+                  if ($top | length) > 0
+                  then [($top[0] + " allow"), ($top[0] + " support"), ($top[0] + " custom")]
+                  else []
+                  end
+                )
+            )
+          | unique
+          | .[]
+        ' "${ISSUE_RAW}" 2>>"${ERRORS_FILE}" | tr -d '\r' > "${QUERY_LIST}" || record_error "query derivation: jq processing failed"
+        QUERY_COUNT=0
+        while IFS= read -r QUERY_TERMS; do
+          if [ -z "${QUERY_TERMS}" ]; then
+            continue
+          fi
+          QUERY_COUNT=$((QUERY_COUNT + 1))
+          RESPONSE="${WORK_DIR}/search-${QUERY_COUNT}.json"
+          if gh api -X GET search/issues \
+            -f q="repo:${REPO} is:issue ${QUERY_TERMS}" \
+            -f per_page=30 > "${RESPONSE}" 2>>"${ERRORS_FILE}"; then
+            jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
+              {
+                query: $query,
+                total_count: (.total_count // 0),
+                numbers: [.items[]? | select(.pull_request == null) | select(.number != $target) | .number] | unique | sort
+              }
+            ' "${RESPONSE}" >> "${QUERIES_JSONL}" 2>>"${ERRORS_FILE}" \
+              || record_error "search: jq summary failed for query [${QUERY_TERMS}]"
+            jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
+              .items[]?
+              | select(.pull_request == null)
+              | select(.number != $target)
+              | {
+                  number: .number,
+                  title: (.title // ""),
+                  url: .html_url,
+                  state: (.state // "unknown"),
+                  created_at: (.created_at // ""),
+                  body_excerpt: ((.body // "")[0:280]),
+                  query: $query
+                }
+            ' "${RESPONSE}" >> "${RESULTS_JSONL}" 2>>"${ERRORS_FILE}" \
+              || record_error "search: jq extraction failed for query [${QUERY_TERMS}]"
+          else
+            record_error "search: gh api failed for query [${QUERY_TERMS}]"
+          fi
+          sleep 2
+        done < "${QUERY_LIST}"
+        jq -s -c '.' "${RESULTS_JSONL}" > "${WORK_DIR}/results.json" 2>>"${ERRORS_FILE}" \
+          || { echo '[]' > "${WORK_DIR}/results.json"; record_error "aggregation: results slurp failed"; }
+        jq -s -c '.' "${QUERIES_JSONL}" > "${WORK_DIR}/queries.json" 2>>"${ERRORS_FILE}" \
+          || { echo '[]' > "${WORK_DIR}/queries.json"; record_error "aggregation: queries slurp failed"; }
+        jq -n \
+          --arg issue "${NUM}" \
+          --arg repo "${REPO}" \
+          --argjson complete "${COMPLETE}" \
+          --argjson version "${INDEX_VERSION}" \
+          --argjson query_count "${QUERY_COUNT}" \
+          --slurpfile issue_data "${ISSUE_RAW}" \
+          --slurpfile results "${WORK_DIR}/results.json" \
+          --slurpfile queries "${WORK_DIR}/queries.json" \
+          --rawfile errorlog "${ERRORS_FILE}" \
+          '
+            def tokens:
+              ascii_downcase
+              | gsub("[^a-z0-9_]+"; " ")
+              | split(" ")
+              | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
+              | flatten
+              | map(select(length >= 4))
+              | map(
+                  if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
+                  then .[0:-1]
+                  else .
+                  end
+                )
+              | . as $tokens
+              | [
+                  "about","above","across","after","again","against","already","also","although","always",
+                  "among","another","appear","applied","apply","available","because","before","being","below",
+                  "between","body","branch","change","changes","check","checked","clear","code","configuration",
+                  "continue","correlation","could","current","default","description","details","during","each",
+                  "error","example","existing","fails","from","github","have","having","include","issue","later",
+                  "main","make","module","more","need","needed","other","passes","please","provider","request",
+                  "resource","should","state","still","than","that","their","then","there","these","they","this",
+                  "through","type","update","using","value","version","when","where","which","while","with","would"
+                ] as $stop
+              | $tokens
+              | map(. as $token | select(($stop | index($token)) == null))
+              | unique;
+            def overlap($left; $right):
+              [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
+            (($issue_data[0].title // "") | tokens) as $issue_title_tokens
+            | (($issue_data[0].body // "") | tokens) as $issue_body_tokens
+            | (
+                $results[0]
+                | group_by(.number)
+                | map(
+                    .[0] as $first
+                    | ($first.title | tokens) as $cand_title_tokens
+                    | ($first.body_excerpt | tokens) as $cand_body_tokens
+                    | overlap($issue_title_tokens; $cand_title_tokens) as $title_title
+                    | overlap($issue_title_tokens; $cand_body_tokens) as $title_body
+                    | overlap($issue_body_tokens; $cand_title_tokens) as $body_title
+                    | (
+                        (($title_title | length) * 5)
+                        + (($title_body | length) * 3)
+                        + (($body_title | length) * 2)
+                      ) as $score
+                    | {
+                        number: $first.number,
+                        title: $first.title,
+                        url: $first.url,
+                        state: $first.state,
+                        created_at: $first.created_at,
+                        body_excerpt: $first.body_excerpt,
+                        matched_queries: ([.[].query] | unique | sort),
+                        lexical_relevance: {
+                          version: 1,
+                          score: $score,
+                          signals: {
+                            issue_title_to_candidate_title: $title_title[0:10],
+                            issue_title_to_candidate_body: $title_body[0:10],
+                            issue_body_to_candidate_title: $body_title[0:10]
+                          }
+                        }
+                      }
+                  )
+                | sort_by(.number)
+              ) as $candidates
+            | ([$candidates[] | select(.state == "open") | .number] | sort) as $open_numbers
+            | ([$candidates[]
+                | select(.lexical_relevance.score >= 12)]
+               | sort_by(-.lexical_relevance.score, .number)
+               | .[0:6]
+               | map(.number)) as $must_compare
+            | {
+                version: $version,
+                issue_number: ($issue | tonumber),
+                repository: $repo,
+                loaded: true,
+                complete: $complete,
+                success: $complete,
+                errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
+                query_count: $query_count,
+                queries: $queries[0],
+                candidate_count: ($candidates | length),
+                open_candidate_count: ($open_numbers | length),
+                must_compare: $must_compare,
+                candidates: $candidates
+              }
+          ' > "${INDEX_FILE}"
+        echo "Duplicate candidate prefetch: queries=${QUERY_COUNT}, index=${INDEX_FILE}, complete=${COMPLETE}"
+        rm -rf "${WORK_DIR}"
+    - name: Render triage evidence blocks
+      run: |
+        set -o pipefail
+        AGENT_DIR=/tmp/gh-aw/agent
+        mkdir -p "${AGENT_DIR}"
+        DUP_INDEX="${AGENT_DIR}/issue-candidate-index.json"
+        PR_STATUS="${AGENT_DIR}/pr-candidate-status.json"
+        PR_INDEX="${AGENT_DIR}/pr-candidate-screening-index.json"
+        AUDIT_FILE="${AGENT_DIR}/triage-audit-block.md"
+        STATUS_LINE="${AGENT_DIR}/triage-screening-status.md"
+        VALIDATION_FILE="${AGENT_DIR}/pr-evidence-validation.json"
+        printf '%s\n' '{"valid":false}' > "${VALIDATION_FILE}"
+        # The validation programs below are the deterministic contracts the prompt used
+        # to ask the agent to run by hand. Evaluating them here keeps ~5KB of dense
+        # filter syntax out of the model-facing prompt, and means a run cannot report
+        # that the invariants passed unless they were actually evaluated.
+        AUDIT_FALLBACK='- Prefetched duplicate searches: the deterministic duplicate index did not load, so no prefetched search record is available for this run. Do not close this issue as a duplicate in this run.'
+        STATUS_FALLBACK='- **PR-evidence and screening status:** the deterministic PR evidence contracts did not pass, so screening counts and candidate numbers are unavailable for this run. Confirmed-fix closure and PR linking were skipped; duplicate-closure decisions are unaffected.'
+        fallback() {
+          printf '%s\n' "$2" > "$1"
+          echo "render: $3; wrote fallback line to $1"
+        }
+        render_audit() {
+          if [ ! -s "${DUP_INDEX}" ]; then
+            fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index missing or empty"
+            return
+          fi
+          if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.query_count | type == "number") and (.queries | type == "array") and (.candidate_count | type == "number") and (.candidates | type == "array") and (.open_candidate_count | type == "number") and (.must_compare | type == "array") and ((.must_compare - [.candidates[].number]) == []) and (.query_count == (.queries | length)) and (.candidate_count == (.candidates | length)) and (.open_candidate_count == ([.candidates[] | select(.state == "open")] | length)) and ([.candidates[].number] | unique | length) == .candidate_count and (all(.queries[]; (.query | type == "string") and (.numbers | type == "array"))) and (all(.candidates[]; (.number | type == "number") and (.title | type == "string") and (.state | type == "string") and (.created_at | type == "string") and (.url | type == "string") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.matched_queries | type == "array") and (.matched_queries | length > 0) and (.lexical_relevance.score | type == "number") and (.lexical_relevance.signals | type == "object")))' "${DUP_INDEX}" > /dev/null 2>&1; then
+            fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index failed its contract"
+            return
+          fi
+          if ! jq -r '
+              def numlist($nums):
+                if (($nums // []) | length) == 0 then "none"
+                else (($nums // []) | map("#" + (. | tostring)) | join(", "))
+                end;
+              ["- Prefetched duplicate searches (from `issue-candidate-index.json`):"]
+              + (
+                  .queries
+                  | map(
+                      "  - `" + (.query // "") + "` → "
+                      + (
+                          if (((.numbers // []) | length) == 0) then "no results"
+                          else ((.numbers // []) | map("`#" + (. | tostring) + "`") | join(", "))
+                          end
+                        )
+                    )
+                )
+              + ["- Candidates requiring explicit comparison: " + numlist(.must_compare)]
+              | .[]
+            ' "${DUP_INDEX}" > "${AUDIT_FILE}"; then
+            fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render failed"
+            return
+          fi
+          if [ ! -s "${AUDIT_FILE}" ]; then
+            fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render produced no output"
+            return
+          fi
+          echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
+        }
+        render_status() {
+          if [ ! -s "${PR_STATUS}" ] || [ ! -s "${PR_INDEX}" ]; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status or screening index missing or empty"
+            return
+          fi
+          if ! jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.merged_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.merged_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' "${PR_STATUS}" > /dev/null 2>&1; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status failed its contract"
+            return
+          fi
+          if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == $index.merged_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory")) and (.open_inventory or .merged_inventory))) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.merged_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' "${PR_INDEX}" > /dev/null 2>&1; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR screening index failed its contract"
+            return
+          fi
+          if ! jq -e -n --slurpfile s "${PR_STATUS}" --slurpfile i "${PR_INDEX}" '
+              ($s[0].candidate_count == $i[0].candidate_count)
+              and ($s[0].open_inventory_count == $i[0].open_inventory_count)
+              and ($s[0].merged_inventory_count == $i[0].merged_inventory_count)
+              and ($s[0].required_inspection_count == $i[0].required_inspection_count)
+              and ($s[0].required_inspection_numbers == $i[0].required_inspection_numbers)
+            ' > /dev/null 2>&1; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status and screening index disagree on counts"
+            return
+          fi
+          if ! jq -r '
+              def numlist($nums):
+                if (($nums // []) | length) == 0 then "none"
+                else (($nums // []) | sort | map("`#" + (. | tostring) + "`") | join(", "))
+                end;
+              ([.open_inventory_screening[]
+                | select(.lexical_relevance.plausible == true)
+                | .number] | unique | sort) as $plausible
+              | "- **PR-evidence and screening status:** `candidate_count`: \(.candidate_count), "
+                + "`open_inventory_count`: \(.open_inventory_count), "
+                + "`merged_inventory_count`: \(.merged_inventory_count), "
+                + "`required_inspection_count`: \(.required_inspection_count). "
+                + "Required inspection: \(numlist(.required_inspection_numbers)). "
+                + "Lexically plausible (full inspection mandatory): \(numlist($plausible)). "
+                + "Direct status/index parses succeeded and all count/inspection invariants passed."
+            ' "${PR_INDEX}" > "${STATUS_LINE}"; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render failed"
+            return
+          fi
+          if [ ! -s "${STATUS_LINE}" ]; then
+            fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render produced no output"
+            return
+          fi
+          echo "Screening status rendered -> ${STATUS_LINE}"
+          cat "${STATUS_LINE}"
+          printf '%s\n' '{"valid":true}' > "${VALIDATION_FILE}"
+        }
+        render_audit
+        render_status
+    - name: Prepare release proof verifier
+      run: |
+        mkdir -p /tmp/gh-aw/agent
+        cat <<'TRIAGE_RELEASE_VERIFIER' > /tmp/gh-aw/agent/triage-release-proof.sh
+        set -euo pipefail
+        MODE="${1:?mode required}"
+        AGENT_DIR="${2:?evidence directory required}"
+        OUT="${3:?output path required}"
+        SELECTED_PR="${4:-}"
+        REPO="${GH_AW_GITHUB_REPOSITORY}"
+        WORK_DIR=$(mktemp -d)
+        trap 'rm -rf "${WORK_DIR}"' EXIT
+        NUMBERS='[]'
+        HAS_RELEASE=null
+        LATEST_TAG=''
+        LATEST_PUBLISHED_AT=''
+        # Bound API work without treating an exhausted budget as negative evidence.
+        REQUEST_LIMIT=200
+        DEADLINE=$((SECONDS + 180))
+        printf '0\n' > "${WORK_DIR}/request-count"
+        api() {
+          local count
+          count=$(cat "${WORK_DIR}/request-count")
+          if [ "${count}" -ge "${REQUEST_LIMIT}" ] || [ "${SECONDS}" -ge "${DEADLINE}" ]; then
+            touch "${WORK_DIR}/budget-exhausted"
+            return 1
+          fi
+          printf '%s\n' "$((count + 1))" > "${WORK_DIR}/request-count"
+          timeout 20s gh api "$@"
+        }
+        write_unknown() {
+          local reason="$1"
+          if [ -f "${WORK_DIR}/budget-exhausted" ]; then reason=request_budget_exhausted; fi
+          jq -n --arg reason "${reason}" --argjson loaded "${2:-false}" \
+            --argjson numbers "${NUMBERS}" --argjson has_release "${HAS_RELEASE}" \
+            --arg tag "${LATEST_TAG}" --arg published "${LATEST_PUBLISHED_AT}" '
+            {
+              version:1, loaded:$loaded, has_release:$has_release,
+              latest_tag:(($tag | select(length > 0)) // null),
+              latest_published_at:(($published | select(length > 0)) // null),
+              reason:$reason,
+              prs:[$numbers[] | {number:., status:"unknown", reason:$reason, release_tag:null}]
+            }' > "${OUT}"
+          echo "Release evidence: ${reason}"
+        }
+        # An interrupted lookup must leave unknown, never an empty negative list.
+        write_unknown "lookup_incomplete"
+        case "${MODE}" in
+          prefetched)
+            if ! NUMBERS=$(jq -ce '
+              [.required_inspection[], .open_inventory_screening[]] | map(.number) | unique | sort
+              | select(all(.[]; type == "number" and . > 0 and floor == .))
+            ' "${AGENT_DIR}/pr-candidate-screening-index.json"); then
+              NUMBERS='[]'
+              write_unknown "candidate_index_unavailable"
+              exit 0
+            fi
+            if ! jq -e '.valid == true' "${AGENT_DIR}/pr-evidence-validation.json" > /dev/null; then
+              write_unknown "incomplete_pr_evidence"
+              exit 0
+            fi
+            ;;
+          selected)
+            # Selection is separate from discovery. Never fabricate an index or
+            # validation marker for a PR found outside the initial snapshot.
+            if ! printf '%s' "${SELECTED_PR}" | grep -Eq '^[1-9][0-9]{0,15}$' ||
+               ! NUMBERS=$(jq -cen --arg n "${SELECTED_PR}" '($n | tonumber) | select(. <= 9007199254740991 and floor == .) | [.]'); then
+              NUMBERS='[]'
+              write_unknown "invalid_selected_pr"
+              exit 0
+            fi
+            ;;
+          *)
+            write_unknown "invalid_verification_mode"
+            exit 0
+            ;;
+        esac
+        if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+          write_unknown "invalid_repository"
+          exit 0
+        fi
+        write_unknown "lookup_incomplete"
+        if [ -z "${DEFAULT_BRANCH}" ]; then
+          write_unknown "default_branch_unavailable"
+          exit 0
+        fi
+        # Enumerate every stable release, newest publication first. An older release can contain a fix missing from a newer maintenance release.
+        if ! api --paginate "repos/${REPO}/releases?per_page=100" > "${WORK_DIR}/release-pages.json" ||
+           ! jq -se '
+             select(length > 0 and all(.[]; type == "array"))
+             | add
+             | select(all(.[];
+                 (.draft | type == "boolean") and (.prerelease | type == "boolean")))
+             | map(select(.draft == false and .prerelease == false))
+             | select(all(.[];
+                 (.id | type == "number" and . > 0 and floor == .)
+                 and (.tag_name | type == "string" and test("^[^[:space:]]+$"))
+                 and (.published_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))))
+             | . as $releases
+             | select(
+                 ([$releases[].id] | unique | length) == ($releases | length)
+                 and ([$releases[].tag_name] | unique | length) == ($releases | length))
+             | sort_by(.published_at, .id) | reverse
+           ' "${WORK_DIR}/release-pages.json" > "${WORK_DIR}/releases.json"; then
+          write_unknown "release_list_unavailable"
+          exit 0
+        fi
+        if [ "$(jq length "${WORK_DIR}/releases.json")" -eq 0 ]; then
+          HAS_RELEASE=false
+          write_unknown "no_published_release" true
+          exit 0
+        fi
+        HAS_RELEASE=true
+        LATEST_TAG=$(jq -r '.[0].tag_name' "${WORK_DIR}/releases.json")
+        LATEST_PUBLISHED_AT=$(jq -r '.[0].published_at' "${WORK_DIR}/releases.json")
+        write_unknown "lookup_incomplete"
+        resolve_commit() {
+          local encoded
+          encoded=$(jq -rn --arg ref "$1" '$ref | @uri')
+          api "repos/${REPO}/commits/${encoded}" > "$2" &&
+            jq -er '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "$2"
+        }
+        if ! DEFAULT_SHA=$(resolve_commit "refs/heads/${DEFAULT_BRANCH}" "${WORK_DIR}/default.json"); then
+          write_unknown "default_branch_unavailable"
+          exit 0
+        fi
+        compare_commits() {
+          # Only the ancestry summary is consumed. GitHub can truncate .commits at 250 entries; neither that array nor commit-message #references is proof.
+          api "repos/${REPO}/compare/$1...$2?per_page=1" > "${WORK_DIR}/comparison.json" &&
+            jq -er --arg base "$1" --arg head "$2" '
+              select(.base_commit.sha == $base)
+              | select(.merge_base_commit.sha | type == "string" and test("^[0-9a-f]{40}$"))
+              | select(.ahead_by | type == "number" and . >= 0 and floor == .)
+              | select(.behind_by | type == "number" and . >= 0 and floor == .)
+              | select(
+                  (.status == "identical" and $base == $head and .merge_base_commit.sha == $base and .ahead_by == 0 and .behind_by == 0)
+                  or (.status == "ahead" and $base != $head and .merge_base_commit.sha == $base and .ahead_by > 0 and .behind_by == 0)
+                  or (.status == "behind" and $base != $head and .merge_base_commit.sha == $head and .ahead_by == 0 and .behind_by > 0)
+                  or (.status == "diverged" and $base != $head and .merge_base_commit.sha != $base and .merge_base_commit.sha != $head and .ahead_by > 0 and .behind_by > 0))
+              | .status
+            ' "${WORK_DIR}/comparison.json"
+        }
+        RESULTS="${WORK_DIR}/results.jsonl"
+        : > "${RESULTS}"
+        write_pr() {
+          local reason="$2"
+          if [ "$1" = unknown ] && [ -f "${WORK_DIR}/budget-exhausted" ]; then reason=request_budget_exhausted; fi
+          jq -cn --argjson number "${NUMBER}" --arg status "$1" --arg reason "${reason}" --arg tag "${3:-}" \
+            '{number:$number, status:$status, reason:$reason, release_tag:(($tag | select(length > 0)) // null)}' >> "${RESULTS}"
+        }
+        jq -r '.[] | [.id, .tag_name] | @tsv' "${WORK_DIR}/releases.json" > "${WORK_DIR}/release-refs.tsv"
+        for NUMBER in $(jq -r '.[]' <<< "${NUMBERS}"); do
+          if [ -f "${WORK_DIR}/budget-exhausted" ]; then
+            write_pr unknown request_budget_exhausted
+            continue
+          fi
+          PR="${WORK_DIR}/pr.json"
+          if ! api "repos/${REPO}/pulls/${NUMBER}" > "${PR}" ||
+             ! jq -e --argjson number "${NUMBER}" '
+               .number == $number and (.merged | type == "boolean") and (.draft | type == "boolean")
+             ' "${PR}" > /dev/null; then
+            write_pr unknown pr_metadata_unavailable
+            continue
+          fi
+          # Before merging, merge_commit_sha is a test merge, not a shipped commit.
+          if ! jq -e '.merged == true and .draft == false' "${PR}" > /dev/null; then
+            write_pr unknown pr_not_merged
+            continue
+          fi
+          if ! jq -e --arg repo "${REPO}" --arg branch "${DEFAULT_BRANCH}" \
+            '.base.repo.full_name == $repo and .base.ref == $branch' "${PR}" > /dev/null; then
+            write_pr unknown pr_not_targeting_default_branch
+            continue
+          fi
+          if ! MERGE_SHA=$(jq -er '.merge_commit_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "${PR}"); then
+            write_pr unknown merge_commit_unavailable
+            continue
+          fi
+          if ! DEFAULT_RELATION=$(compare_commits "${MERGE_SHA}" "${DEFAULT_SHA}") ||
+             { [ "${DEFAULT_RELATION}" != ahead ] && [ "${DEFAULT_RELATION}" != identical ]; }; then
+            write_pr unknown default_branch_membership_unverified
+            continue
+          fi
+          STATUS=awaiting_release
+          REASON=all_releases_precede_merge_commit
+          RELEASE_TAG=''
+          while IFS=$'\t' read -r RELEASE_ID TAG; do
+            # Cache each tag's resolved commit once per run. These internal SHAs are removed on exit and never become agent-visible reference data.
+            PIN="${WORK_DIR}/release-${RELEASE_ID}.sha"
+            if [ ! -f "${PIN}" ]; then
+              if ! resolve_commit "refs/tags/${TAG}" "${WORK_DIR}/tag.json" > "${PIN}"; then
+                : > "${PIN}"
+              fi
+            fi
+            RELEASE_SHA=$(cat "${PIN}")
+            if [ -z "${RELEASE_SHA}" ]; then
+              STATUS=unknown
+              REASON=release_tag_unavailable
+              if [ -f "${WORK_DIR}/budget-exhausted" ]; then break; fi
+              continue
+            fi
+            if ! RELATION=$(compare_commits "${MERGE_SHA}" "${RELEASE_SHA}"); then
+              STATUS=unknown
+              REASON=release_comparison_unavailable
+              if [ -f "${WORK_DIR}/budget-exhausted" ]; then break; fi
+              continue
+            fi
+            case "${RELATION}" in
+              ahead|identical)
+                STATUS=released
+                REASON=release_contains_merge_commit
+                RELEASE_TAG="${TAG}"
+                break
+                ;;
+              diverged)
+                STATUS=unknown
+                REASON=release_history_diverged
+                ;;
+            esac
+          done < "${WORK_DIR}/release-refs.tsv"
+          write_pr "${STATUS}" "${REASON}" "${RELEASE_TAG}"
+        done
+        jq -s --arg tag "${LATEST_TAG}" --arg published "${LATEST_PUBLISHED_AT}" '
+          {version:1, loaded:true, has_release:true, latest_tag:$tag,
+           latest_published_at:$published, reason:null, prs:.}
+        ' "${RESULTS}" > "${OUT}"
+        TRIAGE_RELEASE_VERIFIER
+    - name: Fetch release status
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        bash /tmp/gh-aw/agent/triage-release-proof.sh prefetched /tmp/gh-aw/agent /tmp/gh-aw/agent/release-status.json
+    - name: Seal triage evidence
+      id: seal-triage-evidence
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+      env:
+        TRIAGE_REPOSITORY: ${{ github.repository }}
+        TRIAGE_ISSUE: ${{ github.event.inputs.issue_number || github.event.issue.number }}
+        TRIAGE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        TRIAGE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const directory = '/tmp/gh-aw/agent';
+          const producerAttempt = process.env.GITHUB_RUN_ATTEMPT;
+          if (!/^[1-9][0-9]*$/.test(producerAttempt || '') || !Number.isSafeInteger(Number(producerAttempt)))
+            throw new Error('Invalid producer run attempt');
+          const files = ['repo-labels.json', 'issue-number.txt', 'issue-type.txt', 'issue-state-history.json', 'pr-candidate-status.json', 'pr-candidate-screening-index.json', 'issue-candidate-index.json', 'triage-audit-block.md', 'triage-screening-status.md', 'pr-evidence-validation.json', 'release-status.json', 'triage-release-proof.sh'];
+          const hashes = {};
+          for (const name of files) {
+            const file = path.join(directory, name);
+            if (!fs.lstatSync(file).isFile()) throw new Error(`Not a regular evidence file: ${name}`);
+            hashes[name] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          }
+          const manifest = JSON.stringify({
+            version: 1, repository: process.env.TRIAGE_REPOSITORY, issue_number: process.env.TRIAGE_ISSUE,
+            run_id: process.env.GITHUB_RUN_ID, run_attempt: producerAttempt,
+            workflow_sha: process.env.TRIAGE_WORKFLOW_SHA, default_branch: process.env.TRIAGE_DEFAULT_BRANCH, files: hashes
+          });
+          fs.writeFileSync(path.join(directory, 'triage-evidence-manifest.json'), manifest);
+          core.setOutput('sha256', crypto.createHash('sha256').update(manifest).digest('hex'));
+          core.setOutput('producer_attempt', producerAttempt);
+    - name: Upload trusted triage evidence
+      id: upload-triage-evidence
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: triage-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        path: /tmp/gh-aw/agent
+        if-no-files-found: error
+        overwrite: false
+  agent:
+    needs: [triage_evidence]
+  safe_outputs:
+    permissions:
+      contents: read
 steps:
 # Workaround for github/gh-aw#52327: when the installer finds a cached
 # copilot-cli within its 14-day TTL it only prepends the cache dir to PATH and
@@ -96,1096 +1668,12 @@ steps:
 # which does write /usr/local/bin/copilot. Remove once upstream is fixed.
 - name: Force Copilot CLI download (workaround github/gh-aw#52327)
   run: sudo rm -rf /opt/hostedtoolcache/copilot-cli || true
-- env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  name: Fetch label definitions
-  run: |
-    mkdir -p /tmp/gh-aw/agent
-    LABELS_FILE=/tmp/gh-aw/agent/repo-labels.json
-    gh api "repos/${{ github.repository }}/labels?per_page=100" | jq '[.[] | {name, description}]' > "$LABELS_FILE" || echo '[]' > "$LABELS_FILE"
-- name: Resolve target issue number
-  env:
-    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
-  run: |
-    echo "${ISSUE_NUMBER}" > /tmp/gh-aw/agent/issue-number.txt
-- name: Fetch current issue type
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
-    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
-  run: |
-    set -o pipefail
-    TYPE_FILE=/tmp/gh-aw/agent/issue-type.txt
-    RAW=$(mktemp)
-    # The agent's issue-reading tool does not return the native issue type, and
-    # the `Type: …` labels and the template's "### Issue Type?" field are not it.
-    if gh api "repos/${GH_AW_GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" \
-      --jq '.type.name // "NONE"' > "${RAW}"; then
-      tr -d '\r' < "${RAW}" | head -n 1 > "${TYPE_FILE}"
-    else
-      echo "UNKNOWN" > "${TYPE_FILE}"
-    fi
-    rm -f "${RAW}"
-- name: Fetch issue close and reopen history
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
-    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
-  run: |
-    set -o pipefail
-    HISTORY_FILE=/tmp/gh-aw/agent/issue-state-history.json
-    EVENTS_FILE=$(mktemp)
-    if gh api --paginate "repos/${GH_AW_GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/events?per_page=100" \
-      | jq -s '[.[][] | select(.event == "closed" or .event == "reopened") | {
-          event,
-          created_at,
-          actor: {
-            login: .actor.login,
-            type: .actor.type
-          }
-        }]' > "${EVENTS_FILE}"; then
-      jq -n --slurpfile events "${EVENTS_FILE}" '{loaded: true, events: $events[0]}' > "${HISTORY_FILE}"
-    else
-      echo '{"loaded":false,"events":[]}' > "${HISTORY_FILE}"
-    fi
-    rm -f "${EVENTS_FILE}"
-- name: Prefetch PR candidate evidence for target issue
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
-    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
-  run: |
-    set -o pipefail
-    mkdir -p /tmp/gh-aw/agent
-    STATUS_FILE=/tmp/gh-aw/agent/pr-candidate-status.json
-    INDEX_FILE=/tmp/gh-aw/agent/pr-candidate-screening-index.json
-    INDEX_VERSION=1
-    REPO="${GH_AW_GITHUB_REPOSITORY}"
-    NUM="${ISSUE_NUMBER}"
-    write_failure_contracts() {
-      FAILURE_MESSAGE="$1"
-      jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "${FAILURE_MESSAGE}" --argjson version "${INDEX_VERSION}" \
-        '{
-          version:$version,
-          issue_number:($issue | tonumber? // $issue),
-          repository:$repo,
-          loaded:false,
-          complete:false,
-          success:false,
-          errors:[$error],
-          candidate_count:0,
-          required_inspection:[],
-          open_inventory_screening:[]
-        }' > "${INDEX_FILE}"
-      jq -n \
-        --arg issue "${NUM}" \
-        --arg repo "${REPO}" \
-        --arg error "${FAILURE_MESSAGE}" \
-        --arg index_path "${INDEX_FILE}" \
-        --argjson index_version "${INDEX_VERSION}" \
-        '{
-          issue_number:($issue | tonumber? // $issue),
-          repository:$repo,
-          loaded:false,
-          complete:false,
-          success:false,
-          errors:[$error],
-          candidate_count:0,
-          open_inventory_count:0,
-          merged_inventory_count:0,
-          required_inspection_count:0,
-          required_inspection_numbers:[],
-          exact_required_inspection_count:0,
-          exact_required_inspection_numbers:[],
-          timeline_required_inspection_count:0,
-          timeline_required_inspection_numbers:[],
-          commit_required_inspection_count:0,
-          commit_required_inspection_numbers:[],
-          screening_index_path:$index_path,
-          index_version:$index_version
-        }' > "${STATUS_FILE}"
-    }
-    if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
-      || ! printf '%s' "${NUM}" | grep -Eq '^[1-9][0-9]*$'; then
-      write_failure_contracts "invalid repository or issue number"
-      exit 0
-    fi
-    WORK_DIR=$(mktemp -d)
-    CANDIDATES_JSONL="${WORK_DIR}/candidates.jsonl"
-    ERRORS_FILE="${WORK_DIR}/errors.txt"
-    : > "${CANDIDATES_JSONL}"
-    : > "${ERRORS_FILE}"
-    COMPLETE=true
-    # Conservative fallback written up front: if this step dies before the final
-    # write below, the agent still finds an honest "incomplete" file rather than a
-    # stale or missing one, so it never treats a failed load as a false success.
-    write_failure_contracts "prefetch step did not finish"
-    record_error() {
-      echo "$1" >> "${ERRORS_FILE}"
-      COMPLETE=false
-    }
-    ISSUE_RAW="${WORK_DIR}/issue.json"
-    if ! gh api "repos/${REPO}/issues/${NUM}" > "${ISSUE_RAW}" 2>>"${ERRORS_FILE}"; then
-      echo '{"title":"","body":""}' > "${ISSUE_RAW}"
-      record_error "issue metadata: gh api fetch failed for issue #${NUM}"
-    fi
-    # Source 1: issue timeline - cross-referenced PRs, including non-closing mentions.
-    TIMELINE_RAW="${WORK_DIR}/timeline.jsonl"
-    if gh api --paginate "repos/${REPO}/issues/${NUM}/timeline?per_page=100" > "${TIMELINE_RAW}" 2>>"${ERRORS_FILE}"; then
-      jq -c -s --arg repo "${REPO}" '
-        add // []
-        | .[]
-        | select(.event == "cross-referenced")
-        | (.source.issue? // empty)
-        | select(.repository_url == ("https://api.github.com/repos/" + $repo))
-        | select(.pull_request != null)
-        | {
-            number: .number,
-            title: .title,
-            url: .html_url,
-            state: (.state // "unknown" | ascii_upcase),
-            draft: (.draft // false),
-            merged: (.pull_request.merged_at != null),
-            body: (.body // ""),
-            source: "timeline_cross_reference",
-            detail: "Timeline cross-reference on the issue (includes non-closing mentions)"
-          }
-      ' "${TIMELINE_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "timeline: jq processing failed for issue #${NUM}"
-    else
-      record_error "timeline: gh api fetch failed for issue #${NUM}"
-    fi
-    # Sources 2-4: an exhaustive, paginated PR scan. It provides exact title/body
-    # matches and commit references across every PR state, plus a compact inventory
-    # of every currently open PR so reference-free fixes remain discoverable.
-    GRAPHQL_QUERY="${WORK_DIR}/pr-scan.graphql"
-    cat > "${GRAPHQL_QUERY}" <<'GRAPHQL_EOF'
-    query($owner: String!, $repo: String!, $endCursor: String) {
-      repository(owner: $owner, name: $repo) {
-        pullRequests(first: 50, after: $endCursor, states: [OPEN, CLOSED, MERGED], orderBy: {field: UPDATED_AT, direction: DESC}) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            number
-            title
-            url
-            state
-            isDraft
-            merged
-            body
-            commits(first: 100) {
-              pageInfo { hasNextPage }
-              nodes { commit { oid message } }
-            }
-            files(first: 30) {
-              pageInfo { hasNextPage }
-              nodes { path }
-            }
-            mergedAt
-          }
-        }
-      }
-    }
-    GRAPHQL_EOF
-    OWNER_NAME="${REPO%%/*}"
-    REPO_NAME="${REPO##*/}"
-    PR_SCAN_RAW="${WORK_DIR}/pr-scan.jsonl"
-    # Recently merged PRs are inventoried alongside open ones so an issue that was
-    # already fixed on the default branch can be recognised even when nothing in
-    # the issue references the fixing PR. Bounded by age and count to keep the
-    # candidate set reviewable on long-lived repositories.
-    MERGED_CUTOFF="$(date -u -d '180 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '1970-01-01T00:00:00Z')"
-    if gh api graphql --paginate -F query="@${GRAPHQL_QUERY}" -f owner="${OWNER_NAME}" -f repo="${REPO_NAME}" > "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}"; then
-      jq -c -s --arg num "${NUM}" --arg repo "${REPO}" --arg cutoff "${MERGED_CUTOFF}" '
-        ("#" + $num + "\\b") as $numRef
-        | ($repo + "#" + $num + "\\b") as $qualRef
-        | ("(?i)\\b(refs?|fixes?|closes?|resolves?)\\b[[:space:]]*#" + $num + "\\b") as $bodyRef
-        | [.[].data.repository.pullRequests.nodes[]?] as $prs
-        | (
-            [$prs[] | select((.merged == true) and ((.mergedAt // "") >= $cutoff))]
-            | sort_by(.mergedAt) | reverse | .[0:25]
-            | .[]
-            | {number:.number, title:.title, url:.url, state:.state, draft:.isDraft, merged:.merged, body:(.body // ""),
-               source:"merged_pr_inventory", detail:"Recently merged PR; screen for a fix that already shipped on the default branch",
-               file_names:[.files.nodes[]?.path], files_truncated:(.files.pageInfo.hasNextPage // false)}
-          ),
-          (
-          $prs[]
-        | . as $pr
-        | (
-            (if $pr.state == "OPEN" then
-              [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""),
-                source:"open_pr_inventory", detail:"Current open PR; screen title, body excerpt, and changed-file names for relevance",
-                file_names:[$pr.files.nodes[]?.path], files_truncated:($pr.files.pageInfo.hasNextPage // false)}]
-            else [] end)
-            +
-            (if (($pr.title // "") | test($numRef) or (($pr.title // "") | test($qualRef))) then
-              [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""), source:"issue_number_search_title", detail:("PR title contains #" + $num + " or a repo-qualified reference")}]
-            else [] end)
-            +
-            (if (($pr.body // "") | test($numRef) or (($pr.body // "") | test($qualRef))) then
-              [{number:$pr.number, title:$pr.title, url:$pr.url, state:$pr.state, draft:$pr.isDraft, merged:$pr.merged, body:($pr.body // ""), source:"issue_number_search_body", detail:("PR body contains #" + $num + " or a repo-qualified reference")}]
-            else [] end)
-            +
-            [
-              ($pr.commits.nodes[]? | .commit
-               | select((.message | test($numRef)) or (.message | test($qualRef)))
-               | {
-                   number: $pr.number, title: $pr.title, url: $pr.url, state: $pr.state, draft: $pr.isDraft, merged: $pr.merged, body: ($pr.body // ""),
-                   source: (if (.message | test($bodyRef)) then "commit_body_refs" else "commit_message_reference" end),
-                   sha: .oid, message: .message,
-                   detail: ("Commit message references #" + $num)
-                 }
-              )
-            ]
-          )
-          | .[]
-          )
-      ' "${PR_SCAN_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "graphql pr scan: jq processing failed for issue #${NUM}"
-      TRUNCATED_COMMITS=$(jq -s '[.[].data.repository.pullRequests.nodes[]? | select(.commits.pageInfo.hasNextPage == true)] | length' "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}") \
-        || { TRUNCATED_COMMITS=1; record_error "graphql pr scan: jq commit-pagination check failed"; }
-      if [ "${TRUNCATED_COMMITS}" -gt 0 ]; then
-        record_error "graphql pr scan: ${TRUNCATED_COMMITS} PR(s) have more than 100 commits; commit-reference evidence is incomplete"
-      fi
-      LAST_HAS_NEXT=$(jq -s '[.[].data.repository.pullRequests.pageInfo.hasNextPage] | last // false' "${PR_SCAN_RAW}" 2>>"${ERRORS_FILE}")
-      if [ "${LAST_HAS_NEXT}" = "true" ]; then
-        record_error "graphql pr scan: pagination did not complete (hasNextPage still true) - results may be partial"
-      fi
-    else
-      record_error "graphql pr scan: gh api graphql fetch failed for repo ${REPO}"
-    fi
-    # Source 3: exact issue-number search across PR comments (all states, no date limit).
-    for VARIANT in "#${NUM}" "${REPO}#${NUM}"; do
-      SAFE_NAME=$(echo "${VARIANT}" | tr -c 'a-zA-Z0-9' '_')
-      COMMENT_SEARCH_RAW="${WORK_DIR}/comment-search-${SAFE_NAME}.jsonl"
-      if gh api --paginate --method GET search/issues -f q="repo:${REPO} is:pr in:comments \"${VARIANT}\"" > "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}"; then
-        jq -c -s '
-          [.[] | (.items // [])[]?]
-          | .[]
-          | {
-              number: .number, title: .title, url: .html_url, state: (.state | ascii_upcase),
-              draft: (.draft // false), merged: (.pull_request.merged_at != null),
-              body: (.body // ""), source: "issue_number_search_comment",
-              detail: "Matched via GitHub search in a PR comment"
-            }
-        ' "${COMMENT_SEARCH_RAW}" >> "${CANDIDATES_JSONL}" 2>>"${ERRORS_FILE}" || record_error "comment search: jq processing failed for variant ${VARIANT}"
-        SEARCH_TOTAL=$(jq -s '[.[].total_count // 0] | max // 0' "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}") \
-          || { SEARCH_TOTAL=1; record_error "comment search: jq total-count check failed for variant ${VARIANT}"; }
-        SEARCH_COLLECTED=$(jq -s '[.[] | (.items // []) | length] | add // 0' "${COMMENT_SEARCH_RAW}" 2>>"${ERRORS_FILE}") \
-          || { SEARCH_COLLECTED=0; record_error "comment search: jq result-count check failed for variant ${VARIANT}"; }
-        if [ "${SEARCH_TOTAL}" -gt "${SEARCH_COLLECTED}" ]; then
-          record_error "comment search: GitHub search returned ${SEARCH_COLLECTED} of ${SEARCH_TOTAL} results for ${VARIANT} (1000-result cap or incomplete pagination)"
-        fi
-      else
-        record_error "comment search: gh api search fetch failed for variant ${VARIANT}"
-      fi
-    done
-    # Merge and de-dupe by PR number, preserving every source and its evidence so
-    # Step 6 can report related/partial PRs even when they are not linked.
-    if [ -s "${CANDIDATES_JSONL}" ]; then
-      jq -c -s '
-        group_by(.number)
-        | map({
-            number: .[0].number,
-            title: (first(.[] | select(.title != null and .title != "") | .title) // .[0].title),
-            url: (first(.[] | select(.url != null and .url != "") | .url) // .[0].url),
-            state: (first(.[] | select(.state != null and .state != "") | .state) // .[0].state),
-            draft: (any(.[]; .draft == true)),
-            merged: (any(.[]; .merged == true)),
-            body_excerpt: ((first(.[] | select(.body != null and .body != "") | .body) // "")[0:600]),
-            sources: ([.[] | .source] | unique),
-            file_names: ([.[] | .file_names[]?] | unique),
-            files_truncated: (any(.[]; .files_truncated == true)),
-            evidence: [.[] | {source, detail, sha, message} | with_entries(select(.value != null))]
-          })
-        | sort_by(.number)
-      ' "${CANDIDATES_JSONL}" > "${WORK_DIR}/deduped.json" 2>>"${ERRORS_FILE}" || record_error "dedupe: jq processing failed"
-    else
-      echo '[]' > "${WORK_DIR}/deduped.json"
-    fi
-    if [ ! -s "${WORK_DIR}/deduped.json" ]; then
-      echo '[]' > "${WORK_DIR}/deduped.json"
-    fi
-    CANDIDATE_COUNT=$(jq 'length' "${WORK_DIR}/deduped.json" 2>/dev/null || echo 0)
-    # Build a compact index for inventory screening, bounded so the agent never
-    # has to print a large file to enumerate candidates.
-    jq -n \
-      --arg issue "${NUM}" \
-      --arg repo "${REPO}" \
-      --argjson complete "${COMPLETE}" \
-      --argjson version "${INDEX_VERSION}" \
-      --slurpfile issue_data "${ISSUE_RAW}" \
-      --slurpfile candidates "${WORK_DIR}/deduped.json" \
-      --rawfile errorlog "${ERRORS_FILE}" \
-      '
-        def tokens:
-          ascii_downcase
-          | gsub("[^a-z0-9_]+"; " ")
-          | split(" ")
-          # Keep snake_case compounds whole and also emit their parts, so prose
-          # terms ("role assignment") can match identifiers ("role_assignments").
-          | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
-          | flatten
-          | map(select(length >= 4))
-          | map(
-              if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
-              then .[0:-1]
-              else .
-              end
-            )
-          | . as $tokens
-          | [
-              "about","above","across","after","again","against","already","also","although","always",
-              "among","another","appear","applied","apply","available","because","before","being","below",
-              "between","body","branch","change","changes","check","checked","clear","code","configuration",
-              "continue","correlation","could","current","default","description","details","during","each",
-              "error","example","existing","fails","from","github","have","having","include","issue","later",
-              "main","make","module","more","need","needed","other","passes","please","provider","request",
-              "resource","should","state","still","than","that","their","then","there","these","they","this",
-              "through","type","update","using","value","version","when","where","which","while","with","would"
-            ] as $stop
-          | $tokens
-          | map(. as $token | select(($stop | index($token)) == null))
-          | unique;
-        def overlap($left; $right):
-          [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
-        # Filenames that appear in nearly every AVM PR carry no discovery signal.
-        def ubiquitous_file_tokens:
-          [
-            "changelog","example","footer","header","input","integration","license",
-            "locals","output","provider","readme","terraform","test","tftest","tfvars",
-            "unit","variable"
-          ];
-        def has_source($names): any(.sources[]?; . as $source | ($names | index($source)) != null);
-        def is_required:
-          has_source([
-            "timeline_cross_reference",
-            "issue_number_search_title",
-            "issue_number_search_body",
-            "issue_number_search_comment",
-            "commit_body_refs",
-            "commit_message_reference"
-          ]);
-        (($issue_data[0].title // "") | tokens) as $issue_title_tokens
-        | (($issue_data[0].body // "") | tokens) as $issue_body_tokens
-        | def compact_candidate:
-            . as $candidate
-            | (($candidate.title // "") | tokens) as $pr_title_tokens
-            | (($candidate.body_excerpt // "") | tokens) as $pr_body_tokens
-            | ([($candidate.file_names[]? // "") | tokens[]] | unique) as $pr_file_tokens
-            | overlap($issue_title_tokens; $pr_title_tokens) as $title_title
-            | overlap($issue_title_tokens; $pr_body_tokens) as $title_body
-            | overlap($issue_body_tokens; $pr_title_tokens) as $body_title
-            | overlap($issue_body_tokens; $pr_body_tokens) as $body_body
-            | overlap(($issue_title_tokens + $issue_body_tokens | unique); $pr_file_tokens) as $file_matches
-            | overlap($issue_title_tokens; $pr_file_tokens) as $title_file
-            | (
-                $title_file
-                | map(. as $token | select((ubiquitous_file_tokens | index($token)) == null))
-              ) as $title_file_distinct
-            | (
-                (($title_title | length) * 5)
-                + (($title_body | length) * 3)
-                + (($body_title | length) * 2)
-                + ([($body_body | length), 4] | min)
-                + (($file_matches | length) * 2)
-                + (($title_file_distinct | length) * 3)
-              ) as $score
-            | {
-                number: $candidate.number,
-                title: $candidate.title,
-                sources: $candidate.sources,
-                url: $candidate.url,
-                state: $candidate.state,
-                draft: $candidate.draft,
-                merged: $candidate.merged,
-                body_excerpt: (($candidate.body_excerpt // "")[0:280]),
-                file_names: (($candidate.file_names // [])[0:12]),
-                file_names_truncated: (
-                  ($candidate.files_truncated == true)
-                  or (($candidate.file_names // []) | length > 12)
-                ),
-                open_inventory: (($candidate.sources | index("open_pr_inventory")) != null),
-                merged_inventory: (($candidate.sources | index("merged_pr_inventory")) != null),
-                lexical_relevance: {
-                  version: 1,
-                  score: $score,
-                  plausible: (
-                    ($score >= 15)
-                    or (($title_title | length) >= 3)
-                    or (($title_file_distinct | length) >= 2)
-                  ),
-                  signals: {
-                    issue_title_to_pr_title: $title_title[0:10],
-                    issue_title_to_pr_body: $title_body[0:10],
-                    issue_body_to_pr_title: $body_title[0:10],
-                    issue_body_to_pr_body: $body_body[0:10],
-                    issue_identifiers_to_file_names: $file_matches[0:10],
-                    issue_title_to_file_names: $title_file_distinct[0:10]
-                  }
-                }
-              };
-        {
-          version: $version,
-          issue_number: ($issue | tonumber),
-          repository: $repo,
-          loaded: true,
-          complete: $complete,
-          success: $complete,
-          errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
-          candidate_count: ($candidates[0] | length),
-          open_inventory_count: ([$candidates[0][] | select(.sources | index("open_pr_inventory"))] | length),
-          merged_inventory_count: ([$candidates[0][] | select(.sources | index("merged_pr_inventory"))] | length),
-          required_inspection_count: ([$candidates[0][] | select(is_required)] | length),
-          required_inspection_numbers: ([$candidates[0][] | select(is_required) | .number] | unique | sort),
-          required_inspection: [
-            $candidates[0][] | select(is_required) | compact_candidate
-          ],
-          open_inventory_screening: [
-            $candidates[0][] | select(is_required | not) | compact_candidate
-          ]
-        }
-      ' > "${INDEX_FILE}" 2>>"${ERRORS_FILE}" || {
-        record_error "screening index: jq generation failed"
-        write_failure_contracts "screening index generation failed"
-        rm -rf "${WORK_DIR}"
-        exit 0
-      }
-    if ! jq -e --argjson expected "${CANDIDATE_COUNT}" '
-      (.version == 1)
-      and (.candidate_count == $expected)
-      and (.required_inspection_count == (.required_inspection | length))
-      and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort))
-      and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $expected)
-      and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $expected)
-      and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == .open_inventory_count)
-      and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == .merged_inventory_count)
-      and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory"))))
-      and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory"))))
-      and (all(.required_inspection[], .open_inventory_screening[];
-        (.body_excerpt | length) <= 280 and (.file_names | length) <= 12
-      ))
-    ' "${INDEX_FILE}" >/dev/null 2>>"${ERRORS_FILE}"; then
-      record_error "screening index: count, uniqueness, or partition invariant failed"
-      write_failure_contracts "screening index invariant failed"
-      rm -rf "${WORK_DIR}"
-      exit 0
-    fi
-    jq -n \
-      --arg issue "${NUM}" \
-      --arg repo "${REPO}" \
-      --arg index_path "${INDEX_FILE}" \
-      --argjson index_version "${INDEX_VERSION}" \
-      --argjson complete "${COMPLETE}" \
-      --slurpfile candidates "${WORK_DIR}/deduped.json" \
-      --rawfile errorlog "${ERRORS_FILE}" \
-      '
-        def numbers_with($sources):
-          [
-            $candidates[0][]
-            | select(any(.sources[]?; . as $source | ($sources | index($source)) != null))
-            | .number
-          ] | unique | sort;
-        (numbers_with([
-          "issue_number_search_title",
-          "issue_number_search_body",
-          "issue_number_search_comment"
-        ])) as $exact
-        | (numbers_with(["timeline_cross_reference"])) as $timeline
-        | (numbers_with(["commit_body_refs","commit_message_reference"])) as $commit
-        | (($exact + $timeline + $commit) | unique | sort) as $required
-        | (numbers_with(["open_pr_inventory"])) as $inventory
-        | (numbers_with(["merged_pr_inventory"])) as $merged_inventory
-        | {
-            issue_number: ($issue | tonumber),
-            repository: $repo,
-            loaded: true,
-            complete: $complete,
-            success: $complete,
-            errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
-            candidate_count: ($candidates[0] | length),
-            open_inventory_count: ($inventory | length),
-            merged_inventory_count: ($merged_inventory | length),
-            required_inspection_count: ($required | length),
-            required_inspection_numbers: $required,
-            exact_required_inspection_count: ($exact | length),
-            exact_required_inspection_numbers: $exact,
-            timeline_required_inspection_count: ($timeline | length),
-            timeline_required_inspection_numbers: $timeline,
-            commit_required_inspection_count: ($commit | length),
-            commit_required_inspection_numbers: $commit,
-            screening_index_path: $index_path,
-            index_version: $index_version
-          }
-      ' > "${STATUS_FILE}"
-    echo "PR candidate prefetch: candidates=${CANDIDATE_COUNT}, status=${STATUS_FILE}, index=${INDEX_FILE}, complete=${COMPLETE}"
-    rm -rf "${WORK_DIR}"
-- name: Prefetch duplicate issue candidates for target issue
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
-    ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
-  run: |
-    set -o pipefail
-    mkdir -p /tmp/gh-aw/agent
-    INDEX_FILE=/tmp/gh-aw/agent/issue-candidate-index.json
-    INDEX_VERSION=1
-    REPO="${GH_AW_GITHUB_REPOSITORY}"
-    NUM="${ISSUE_NUMBER}"
-    write_failure_index() {
-      jq -n --arg issue "${NUM}" --arg repo "${REPO}" --arg error "$1" --argjson version "${INDEX_VERSION}" \
-        '{
-          version:$version,
-          issue_number:($issue | tonumber? // $issue),
-          repository:$repo,
-          loaded:false,
-          complete:false,
-          success:false,
-          errors:[$error],
-          query_count:0,
-          queries:[],
-          candidate_count:0,
-          open_candidate_count:0,
-          must_compare:[],
-          candidates:[]
-        }' > "${INDEX_FILE}"
-    }
-    if ! printf '%s' "${REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
-      || ! printf '%s' "${NUM}" | grep -Eq '^[1-9][0-9]*$'; then
-      write_failure_index "invalid repository or issue number"
-      exit 0
-    fi
-    WORK_DIR=$(mktemp -d)
-    ERRORS_FILE="${WORK_DIR}/errors.txt"
-    RESULTS_JSONL="${WORK_DIR}/results.jsonl"
-    QUERIES_JSONL="${WORK_DIR}/queries.jsonl"
-    QUERY_LIST="${WORK_DIR}/queries.txt"
-    : > "${ERRORS_FILE}"
-    : > "${RESULTS_JSONL}"
-    : > "${QUERIES_JSONL}"
-    : > "${QUERY_LIST}"
-    COMPLETE=true
-    # Conservative fallback written up front, matching the PR prefetch contract.
-    write_failure_index "duplicate prefetch step did not finish"
-    record_error() {
-      echo "$1" >> "${ERRORS_FILE}"
-      COMPLETE=false
-    }
-    ISSUE_RAW="${WORK_DIR}/issue.json"
-    if ! gh api "repos/${REPO}/issues/${NUM}" > "${ISSUE_RAW}" 2>>"${ERRORS_FILE}"; then
-      echo '{"title":"","body":""}' > "${ISSUE_RAW}"
-      record_error "issue metadata: gh api fetch failed for issue #${NUM}"
-    fi
-    # Derive search terms from the issue title with the same tokenizer the PR
-    # screening index uses: GitHub ANDs every term, so emit short broad pairs
-    # rather than one long precise query. The remedy-worded variants exist
-    # because the same gap is filed twice, once as a symptom and once as a
-    # feature request, and those two share almost no vocabulary.
-    jq -r '
-      def tokens:
-        ascii_downcase
-        | gsub("[^a-z0-9_]+"; " ")
-        | split(" ")
-        | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
-        | flatten
-        | map(select(length >= 4))
-        | map(
-            if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
-            then .[0:-1]
-            else .
-            end
-          )
-        | . as $tokens
-        | [
-            "about","above","across","after","again","against","already","also","although","always",
-            "among","another","appear","applied","apply","available","because","before","being","below",
-            "between","body","branch","change","changes","check","checked","clear","code","configuration",
-            "continue","correlation","could","current","default","description","details","during","each",
-            "error","example","existing","fails","from","github","have","having","include","issue","later",
-            "main","make","module","more","need","needed","other","passes","please","provider","request",
-            "resource","should","state","still","than","that","their","then","there","these","they","this",
-            "through","type","update","using","value","version","when","where","which","while","with","would"
-          ] as $stop
-        | $tokens
-        | map(. as $token | select(($stop | index($token)) == null))
-        | unique;
-      ((.title // "") | tokens | sort_by(- length) | .[0:4]) as $top
-      | (
-          if ($top | length) >= 2
-          then [range(0; $top | length) as $i | range($i + 1; $top | length) as $j | ($top[$i] + " " + $top[$j])]
-          else $top
-          end
-        ) as $pairs
-      | (
-          $pairs
-          + (
-              if ($top | length) > 0
-              then [($top[0] + " allow"), ($top[0] + " support"), ($top[0] + " custom")]
-              else []
-              end
-            )
-        )
-      | unique
-      | .[]
-    ' "${ISSUE_RAW}" 2>>"${ERRORS_FILE}" | tr -d '\r' > "${QUERY_LIST}" || record_error "query derivation: jq processing failed"
-    QUERY_COUNT=0
-    while IFS= read -r QUERY_TERMS; do
-      if [ -z "${QUERY_TERMS}" ]; then
-        continue
-      fi
-      QUERY_COUNT=$((QUERY_COUNT + 1))
-      RESPONSE="${WORK_DIR}/search-${QUERY_COUNT}.json"
-      if gh api -X GET search/issues \
-        -f q="repo:${REPO} is:issue ${QUERY_TERMS}" \
-        -f per_page=30 > "${RESPONSE}" 2>>"${ERRORS_FILE}"; then
-        jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
-          {
-            query: $query,
-            total_count: (.total_count // 0),
-            numbers: [.items[]? | select(.pull_request == null) | select(.number != $target) | .number] | unique | sort
-          }
-        ' "${RESPONSE}" >> "${QUERIES_JSONL}" 2>>"${ERRORS_FILE}" \
-          || record_error "search: jq summary failed for query [${QUERY_TERMS}]"
-        jq -c --arg query "${QUERY_TERMS}" --argjson target "${NUM}" '
-          .items[]?
-          | select(.pull_request == null)
-          | select(.number != $target)
-          | {
-              number: .number,
-              title: (.title // ""),
-              url: .html_url,
-              state: (.state // "unknown"),
-              created_at: (.created_at // ""),
-              body_excerpt: ((.body // "")[0:280]),
-              query: $query
-            }
-        ' "${RESPONSE}" >> "${RESULTS_JSONL}" 2>>"${ERRORS_FILE}" \
-          || record_error "search: jq extraction failed for query [${QUERY_TERMS}]"
-      else
-        record_error "search: gh api failed for query [${QUERY_TERMS}]"
-      fi
-      sleep 2
-    done < "${QUERY_LIST}"
-    jq -s -c '.' "${RESULTS_JSONL}" > "${WORK_DIR}/results.json" 2>>"${ERRORS_FILE}" \
-      || { echo '[]' > "${WORK_DIR}/results.json"; record_error "aggregation: results slurp failed"; }
-    jq -s -c '.' "${QUERIES_JSONL}" > "${WORK_DIR}/queries.json" 2>>"${ERRORS_FILE}" \
-      || { echo '[]' > "${WORK_DIR}/queries.json"; record_error "aggregation: queries slurp failed"; }
-    jq -n \
-      --arg issue "${NUM}" \
-      --arg repo "${REPO}" \
-      --argjson complete "${COMPLETE}" \
-      --argjson version "${INDEX_VERSION}" \
-      --argjson query_count "${QUERY_COUNT}" \
-      --slurpfile issue_data "${ISSUE_RAW}" \
-      --slurpfile results "${WORK_DIR}/results.json" \
-      --slurpfile queries "${WORK_DIR}/queries.json" \
-      --rawfile errorlog "${ERRORS_FILE}" \
-      '
-        def tokens:
-          ascii_downcase
-          | gsub("[^a-z0-9_]+"; " ")
-          | split(" ")
-          | map(. as $raw | [$raw] + (if ($raw | test("_")) then ($raw | split("_")) else [] end))
-          | flatten
-          | map(select(length >= 4))
-          | map(
-              if test("^[a-z][a-z0-9_]*s$") and length > 4 and (endswith("ss") | not)
-              then .[0:-1]
-              else .
-              end
-            )
-          | . as $tokens
-          | [
-              "about","above","across","after","again","against","already","also","although","always",
-              "among","another","appear","applied","apply","available","because","before","being","below",
-              "between","body","branch","change","changes","check","checked","clear","code","configuration",
-              "continue","correlation","could","current","default","description","details","during","each",
-              "error","example","existing","fails","from","github","have","having","include","issue","later",
-              "main","make","module","more","need","needed","other","passes","please","provider","request",
-              "resource","should","state","still","than","that","their","then","there","these","they","this",
-              "through","type","update","using","value","version","when","where","which","while","with","would"
-            ] as $stop
-          | $tokens
-          | map(. as $token | select(($stop | index($token)) == null))
-          | unique;
-        def overlap($left; $right):
-          [$left[] as $token | select(($right | index($token)) != null) | $token] | unique | sort;
-        (($issue_data[0].title // "") | tokens) as $issue_title_tokens
-        | (($issue_data[0].body // "") | tokens) as $issue_body_tokens
-        | (
-            $results[0]
-            | group_by(.number)
-            | map(
-                .[0] as $first
-                | ($first.title | tokens) as $cand_title_tokens
-                | ($first.body_excerpt | tokens) as $cand_body_tokens
-                | overlap($issue_title_tokens; $cand_title_tokens) as $title_title
-                | overlap($issue_title_tokens; $cand_body_tokens) as $title_body
-                | overlap($issue_body_tokens; $cand_title_tokens) as $body_title
-                | (
-                    (($title_title | length) * 5)
-                    + (($title_body | length) * 3)
-                    + (($body_title | length) * 2)
-                  ) as $score
-                | {
-                    number: $first.number,
-                    title: $first.title,
-                    url: $first.url,
-                    state: $first.state,
-                    created_at: $first.created_at,
-                    body_excerpt: $first.body_excerpt,
-                    matched_queries: ([.[].query] | unique | sort),
-                    lexical_relevance: {
-                      version: 1,
-                      score: $score,
-                      signals: {
-                        issue_title_to_candidate_title: $title_title[0:10],
-                        issue_title_to_candidate_body: $title_body[0:10],
-                        issue_body_to_candidate_title: $body_title[0:10]
-                      }
-                    }
-                  }
-              )
-            | sort_by(.number)
-          ) as $candidates
-        | ([$candidates[] | select(.state == "open") | .number] | sort) as $open_numbers
-        | ([$candidates[]
-            | select(.lexical_relevance.score >= 12)]
-           | sort_by(-.lexical_relevance.score, .number)
-           | .[0:6]
-           | map(.number)) as $must_compare
-        | {
-            version: $version,
-            issue_number: ($issue | tonumber),
-            repository: $repo,
-            loaded: true,
-            complete: $complete,
-            success: $complete,
-            errors: ($errorlog | split("\n") | map(select(length > 0) | .[0:240]) | .[0:20]),
-            query_count: $query_count,
-            queries: $queries[0],
-            candidate_count: ($candidates | length),
-            open_candidate_count: ($open_numbers | length),
-            must_compare: $must_compare,
-            candidates: $candidates
-          }
-      ' > "${INDEX_FILE}"
-    echo "Duplicate candidate prefetch: queries=${QUERY_COUNT}, index=${INDEX_FILE}, complete=${COMPLETE}"
-    rm -rf "${WORK_DIR}"
-- name: Render triage evidence blocks
-  run: |
-    set -o pipefail
-    AGENT_DIR=/tmp/gh-aw/agent
-    mkdir -p "${AGENT_DIR}"
-    DUP_INDEX="${AGENT_DIR}/issue-candidate-index.json"
-    PR_STATUS="${AGENT_DIR}/pr-candidate-status.json"
-    PR_INDEX="${AGENT_DIR}/pr-candidate-screening-index.json"
-    AUDIT_FILE="${AGENT_DIR}/triage-audit-block.md"
-    STATUS_LINE="${AGENT_DIR}/triage-screening-status.md"
-    VALIDATION_FILE="${AGENT_DIR}/pr-evidence-validation.json"
-    printf '%s\n' '{"valid":false}' > "${VALIDATION_FILE}"
-    # The validation programs below are the deterministic contracts the prompt used
-    # to ask the agent to run by hand. Evaluating them here keeps ~5KB of dense
-    # filter syntax out of the model-facing prompt, and means a run cannot report
-    # that the invariants passed unless they were actually evaluated.
-    AUDIT_FALLBACK='- Prefetched duplicate searches: the deterministic duplicate index did not load, so no prefetched search record is available for this run. Do not close this issue as a duplicate in this run.'
-    STATUS_FALLBACK='- **PR-evidence and screening status:** the deterministic PR evidence contracts did not pass, so screening counts and candidate numbers are unavailable for this run. Confirmed-fix closure and PR linking were skipped; duplicate-closure decisions are unaffected.'
-    fallback() {
-      printf '%s\n' "$2" > "$1"
-      echo "render: $3; wrote fallback line to $1"
-    }
-    render_audit() {
-      if [ ! -s "${DUP_INDEX}" ]; then
-        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index missing or empty"
-        return
-      fi
-      if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.query_count | type == "number") and (.queries | type == "array") and (.candidate_count | type == "number") and (.candidates | type == "array") and (.open_candidate_count | type == "number") and (.must_compare | type == "array") and ((.must_compare - [.candidates[].number]) == []) and (.query_count == (.queries | length)) and (.candidate_count == (.candidates | length)) and (.open_candidate_count == ([.candidates[] | select(.state == "open")] | length)) and ([.candidates[].number] | unique | length) == .candidate_count and (all(.queries[]; (.query | type == "string") and (.numbers | type == "array"))) and (all(.candidates[]; (.number | type == "number") and (.title | type == "string") and (.state | type == "string") and (.created_at | type == "string") and (.url | type == "string") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.matched_queries | type == "array") and (.matched_queries | length > 0) and (.lexical_relevance.score | type == "number") and (.lexical_relevance.signals | type == "object")))' "${DUP_INDEX}" > /dev/null 2>&1; then
-        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "duplicate index failed its contract"
-        return
-      fi
-      if ! jq -r '
-          def numlist($nums):
-            if (($nums // []) | length) == 0 then "none"
-            else (($nums // []) | map("#" + (. | tostring)) | join(", "))
-            end;
-          ["- Prefetched duplicate searches (from `issue-candidate-index.json`):"]
-          + (
-              .queries
-              | map(
-                  "  - `" + (.query // "") + "` → "
-                  + (
-                      if (((.numbers // []) | length) == 0) then "no results"
-                      else ((.numbers // []) | map("`#" + (. | tostring) + "`") | join(", "))
-                      end
-                    )
-                )
-            )
-          + ["- Candidates requiring explicit comparison: " + numlist(.must_compare)]
-          | .[]
-        ' "${DUP_INDEX}" > "${AUDIT_FILE}"; then
-        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render failed"
-        return
-      fi
-      if [ ! -s "${AUDIT_FILE}" ]; then
-        fallback "${AUDIT_FILE}" "${AUDIT_FALLBACK}" "audit render produced no output"
-        return
-      fi
-      echo "Audit block rendered: $(wc -l < "${AUDIT_FILE}") line(s) -> ${AUDIT_FILE}"
-    }
-    render_status() {
-      if [ ! -s "${PR_STATUS}" ] || [ ! -s "${PR_INDEX}" ]; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status or screening index missing or empty"
-        return
-      fi
-      if ! jq -e '. as $status | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.merged_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.exact_required_inspection_count | type == "number") and (.exact_required_inspection_numbers | type == "array") and (.timeline_required_inspection_count | type == "number") and (.timeline_required_inspection_numbers | type == "array") and (.commit_required_inspection_count | type == "number") and (.commit_required_inspection_numbers | type == "array") and (.required_inspection_count == (.required_inspection_numbers | length)) and (.exact_required_inspection_count == (.exact_required_inspection_numbers | length)) and (.timeline_required_inspection_count == (.timeline_required_inspection_numbers | length)) and (.commit_required_inspection_count == (.commit_required_inspection_numbers | length)) and (.required_inspection_numbers == ((.exact_required_inspection_numbers + .timeline_required_inspection_numbers + .commit_required_inspection_numbers) | unique | sort)) and (.required_inspection_count <= .candidate_count) and (.open_inventory_count <= .candidate_count) and (.merged_inventory_count <= .candidate_count) and (.screening_index_path | type == "string") and (.index_version == 1)' "${PR_STATUS}" > /dev/null 2>&1; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status failed its contract"
-        return
-      fi
-      if ! jq -e '. as $index | type == "object" and .loaded == true and .complete == true and .success == true and (.errors == []) and (.version == 1) and (.candidate_count | type == "number") and (.open_inventory_count | type == "number") and (.required_inspection_count | type == "number") and (.required_inspection_numbers | type == "array") and (.required_inspection | type == "array") and (.open_inventory_screening | type == "array") and (.required_inspection_count == (.required_inspection | length)) and (.required_inspection_numbers == ([.required_inspection[].number] | unique | sort)) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | length == $index.candidate_count) and (([.required_inspection[].number] + [.open_inventory_screening[].number]) | unique | length == $index.candidate_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory)) | length) == $index.open_inventory_count) and (([.required_inspection[], .open_inventory_screening[]] | map(select(.merged_inventory)) | length) == $index.merged_inventory_count) and (all(.required_inspection[]; (.sources | any(. != "open_pr_inventory" and . != "merged_pr_inventory")))) and (all(.open_inventory_screening[]; (.sources | length > 0) and (.sources | all(. == "open_pr_inventory" or . == "merged_pr_inventory")) and (.open_inventory or .merged_inventory))) and (all(.required_inspection[], .open_inventory_screening[]; (.number | type == "number") and (.title | type == "string") and (.sources | type == "array") and (.url | type == "string") and (.state | type == "string") and (.draft | type == "boolean") and (.merged | type == "boolean") and (.body_excerpt | type == "string") and (.body_excerpt | length) <= 280 and (.file_names | type == "array") and (.file_names | length) <= 12 and (.file_names_truncated | type == "boolean") and (.open_inventory | type == "boolean") and (.merged_inventory | type == "boolean") and (.lexical_relevance.score | type == "number") and (.lexical_relevance.plausible | type == "boolean") and (.lexical_relevance.signals | type == "object")))' "${PR_INDEX}" > /dev/null 2>&1; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR screening index failed its contract"
-        return
-      fi
-      if ! jq -e -n --slurpfile s "${PR_STATUS}" --slurpfile i "${PR_INDEX}" '
-          ($s[0].candidate_count == $i[0].candidate_count)
-          and ($s[0].open_inventory_count == $i[0].open_inventory_count)
-          and ($s[0].merged_inventory_count == $i[0].merged_inventory_count)
-          and ($s[0].required_inspection_count == $i[0].required_inspection_count)
-          and ($s[0].required_inspection_numbers == $i[0].required_inspection_numbers)
-        ' > /dev/null 2>&1; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "PR status and screening index disagree on counts"
-        return
-      fi
-      if ! jq -r '
-          def numlist($nums):
-            if (($nums // []) | length) == 0 then "none"
-            else (($nums // []) | sort | map("`#" + (. | tostring) + "`") | join(", "))
-            end;
-          ([.open_inventory_screening[]
-            | select(.lexical_relevance.plausible == true)
-            | .number] | unique | sort) as $plausible
-          | "- **PR-evidence and screening status:** `candidate_count`: \(.candidate_count), "
-            + "`open_inventory_count`: \(.open_inventory_count), "
-            + "`merged_inventory_count`: \(.merged_inventory_count), "
-            + "`required_inspection_count`: \(.required_inspection_count). "
-            + "Required inspection: \(numlist(.required_inspection_numbers)). "
-            + "Lexically plausible (full inspection mandatory): \(numlist($plausible)). "
-            + "Direct status/index parses succeeded and all count/inspection invariants passed."
-        ' "${PR_INDEX}" > "${STATUS_LINE}"; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render failed"
-        return
-      fi
-      if [ ! -s "${STATUS_LINE}" ]; then
-        fallback "${STATUS_LINE}" "${STATUS_FALLBACK}" "status render produced no output"
-        return
-      fi
-      echo "Screening status rendered -> ${STATUS_LINE}"
-      cat "${STATUS_LINE}"
-      printf '%s\n' '{"valid":true}' > "${VALIDATION_FILE}"
-    }
-    render_audit
-    render_status
-- name: Fetch release status
-  env:
-    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
-    DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-  run: |
-    set -euo pipefail
-    AGENT_DIR=/tmp/gh-aw/agent
-    OUT="${AGENT_DIR}/release-status.json"
-    REPO="${GH_AW_GITHUB_REPOSITORY}"
-    WORK_DIR=$(mktemp -d)
-    trap 'rm -rf "${WORK_DIR}"' EXIT
-    NUMBERS='[]'
-    HAS_RELEASE=null
-    LATEST_TAG=''
-    LATEST_PUBLISHED_AT=''
-    # Bound API work without treating an exhausted budget as negative evidence.
-    REQUEST_LIMIT=200
-    DEADLINE=$((SECONDS + 180))
-    printf '0\n' > "${WORK_DIR}/request-count"
-    api() {
-      local count
-      count=$(cat "${WORK_DIR}/request-count")
-      if [ "${count}" -ge "${REQUEST_LIMIT}" ] || [ "${SECONDS}" -ge "${DEADLINE}" ]; then
-        touch "${WORK_DIR}/budget-exhausted"
-        return 1
-      fi
-      printf '%s\n' "$((count + 1))" > "${WORK_DIR}/request-count"
-      timeout 20s gh api "$@"
-    }
-    write_unknown() {
-      local reason="$1"
-      if [ -f "${WORK_DIR}/budget-exhausted" ]; then reason=request_budget_exhausted; fi
-      jq -n --arg reason "${reason}" --argjson loaded "${2:-false}" \
-        --argjson numbers "${NUMBERS}" --argjson has_release "${HAS_RELEASE}" \
-        --arg tag "${LATEST_TAG}" --arg published "${LATEST_PUBLISHED_AT}" '
-        {
-          version:1, loaded:$loaded, has_release:$has_release,
-          latest_tag:(($tag | select(length > 0)) // null),
-          latest_published_at:(($published | select(length > 0)) // null),
-          reason:$reason,
-          prs:[$numbers[] | {number:., status:"unknown", reason:$reason, release_tag:null}]
-        }' > "${OUT}"
-      echo "Release evidence: ${reason}"
-    }
-    # An interrupted lookup must leave unknown, never an empty negative list.
-    write_unknown "lookup_incomplete"
-    if ! NUMBERS=$(jq -ce '
-      [.required_inspection[], .open_inventory_screening[]] | map(.number) | unique | sort
-      | select(all(.[]; type == "number" and . > 0 and floor == .))
-    ' "${AGENT_DIR}/pr-candidate-screening-index.json"); then
-      NUMBERS='[]'
-      write_unknown "candidate_index_unavailable"
-      exit 0
-    fi
-    if ! jq -e '.valid == true' "${AGENT_DIR}/pr-evidence-validation.json" > /dev/null; then
-      write_unknown "incomplete_pr_evidence"
-      exit 0
-    fi
-    write_unknown "lookup_incomplete"
-    if [ -z "${DEFAULT_BRANCH}" ]; then
-      write_unknown "default_branch_unavailable"
-      exit 0
-    fi
-    # Enumerate every stable release, newest publication first. An older release can contain a fix missing from a newer maintenance release.
-    if ! api --paginate "repos/${REPO}/releases?per_page=100" > "${WORK_DIR}/release-pages.json" ||
-       ! jq -se '
-         select(length > 0 and all(.[]; type == "array"))
-         | add
-         | select(all(.[];
-             (.draft | type == "boolean") and (.prerelease | type == "boolean")))
-         | map(select(.draft == false and .prerelease == false))
-         | select(all(.[];
-             (.id | type == "number" and . > 0 and floor == .)
-             and (.tag_name | type == "string" and test("^[^[:space:]]+$"))
-             and (.published_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))))
-         | . as $releases
-         | select(
-             ([$releases[].id] | unique | length) == ($releases | length)
-             and ([$releases[].tag_name] | unique | length) == ($releases | length))
-         | sort_by(.published_at, .id) | reverse
-       ' "${WORK_DIR}/release-pages.json" > "${WORK_DIR}/releases.json"; then
-      write_unknown "release_list_unavailable"
-      exit 0
-    fi
-    if [ "$(jq length "${WORK_DIR}/releases.json")" -eq 0 ]; then
-      HAS_RELEASE=false
-      write_unknown "no_published_release" true
-      exit 0
-    fi
-    HAS_RELEASE=true
-    LATEST_TAG=$(jq -r '.[0].tag_name' "${WORK_DIR}/releases.json")
-    LATEST_PUBLISHED_AT=$(jq -r '.[0].published_at' "${WORK_DIR}/releases.json")
-    write_unknown "lookup_incomplete"
-    resolve_commit() {
-      local encoded
-      encoded=$(jq -rn --arg ref "$1" '$ref | @uri')
-      api "repos/${REPO}/commits/${encoded}" > "$2" &&
-        jq -er '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "$2"
-    }
-    if ! DEFAULT_SHA=$(resolve_commit "refs/heads/${DEFAULT_BRANCH}" "${WORK_DIR}/default.json"); then
-      write_unknown "default_branch_unavailable"
-      exit 0
-    fi
-    compare_commits() {
-      # Only the ancestry summary is consumed. GitHub can truncate .commits at 250 entries; neither that array nor commit-message #references is proof.
-      api "repos/${REPO}/compare/$1...$2?per_page=1" > "${WORK_DIR}/comparison.json" &&
-        jq -er --arg base "$1" --arg head "$2" '
-          select(.base_commit.sha == $base)
-          | select(.merge_base_commit.sha | type == "string" and test("^[0-9a-f]{40}$"))
-          | select(.ahead_by | type == "number" and . >= 0 and floor == .)
-          | select(.behind_by | type == "number" and . >= 0 and floor == .)
-          | select(
-              (.status == "identical" and $base == $head and .merge_base_commit.sha == $base and .ahead_by == 0 and .behind_by == 0)
-              or (.status == "ahead" and $base != $head and .merge_base_commit.sha == $base and .ahead_by > 0 and .behind_by == 0)
-              or (.status == "behind" and $base != $head and .merge_base_commit.sha == $head and .ahead_by == 0 and .behind_by > 0)
-              or (.status == "diverged" and $base != $head and .merge_base_commit.sha != $base and .merge_base_commit.sha != $head and .ahead_by > 0 and .behind_by > 0))
-          | .status
-        ' "${WORK_DIR}/comparison.json"
-    }
-    RESULTS="${WORK_DIR}/results.jsonl"
-    : > "${RESULTS}"
-    write_pr() {
-      local reason="$2"
-      if [ "$1" = unknown ] && [ -f "${WORK_DIR}/budget-exhausted" ]; then reason=request_budget_exhausted; fi
-      jq -cn --argjson number "${NUMBER}" --arg status "$1" --arg reason "${reason}" --arg tag "${3:-}" \
-        '{number:$number, status:$status, reason:$reason, release_tag:(($tag | select(length > 0)) // null)}' >> "${RESULTS}"
-    }
-    jq -r '.[] | [.id, .tag_name] | @tsv' "${WORK_DIR}/releases.json" > "${WORK_DIR}/release-refs.tsv"
-    for NUMBER in $(jq -r '.[]' <<< "${NUMBERS}"); do
-      if [ -f "${WORK_DIR}/budget-exhausted" ]; then
-        write_pr unknown request_budget_exhausted
-        continue
-      fi
-      PR="${WORK_DIR}/pr.json"
-      if ! api "repos/${REPO}/pulls/${NUMBER}" > "${PR}" ||
-         ! jq -e --argjson number "${NUMBER}" '
-           .number == $number and (.merged | type == "boolean") and (.draft | type == "boolean")
-         ' "${PR}" > /dev/null; then
-        write_pr unknown pr_metadata_unavailable
-        continue
-      fi
-      # Before merging, merge_commit_sha is a test merge, not a shipped commit.
-      if ! jq -e '.merged == true and .draft == false' "${PR}" > /dev/null; then
-        write_pr unknown pr_not_merged
-        continue
-      fi
-      if ! jq -e --arg repo "${REPO}" --arg branch "${DEFAULT_BRANCH}" \
-        '.base.repo.full_name == $repo and .base.ref == $branch' "${PR}" > /dev/null; then
-        write_pr unknown pr_not_targeting_default_branch
-        continue
-      fi
-      if ! MERGE_SHA=$(jq -er '.merge_commit_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' "${PR}"); then
-        write_pr unknown merge_commit_unavailable
-        continue
-      fi
-      if ! DEFAULT_RELATION=$(compare_commits "${MERGE_SHA}" "${DEFAULT_SHA}") ||
-         { [ "${DEFAULT_RELATION}" != ahead ] && [ "${DEFAULT_RELATION}" != identical ]; }; then
-        write_pr unknown default_branch_membership_unverified
-        continue
-      fi
-      STATUS=awaiting_release
-      REASON=all_releases_precede_merge_commit
-      RELEASE_TAG=''
-      while IFS=$'\t' read -r RELEASE_ID TAG; do
-        # Cache each tag's resolved commit once per run. These internal SHAs are removed on exit and never become agent-visible reference data.
-        PIN="${WORK_DIR}/release-${RELEASE_ID}.sha"
-        if [ ! -f "${PIN}" ]; then
-          if ! resolve_commit "refs/tags/${TAG}" "${WORK_DIR}/tag.json" > "${PIN}"; then
-            : > "${PIN}"
-          fi
-        fi
-        RELEASE_SHA=$(cat "${PIN}")
-        if [ -z "${RELEASE_SHA}" ]; then
-          STATUS=unknown
-          REASON=release_tag_unavailable
-          if [ -f "${WORK_DIR}/budget-exhausted" ]; then break; fi
-          continue
-        fi
-        if ! RELATION=$(compare_commits "${MERGE_SHA}" "${RELEASE_SHA}"); then
-          STATUS=unknown
-          REASON=release_comparison_unavailable
-          if [ -f "${WORK_DIR}/budget-exhausted" ]; then break; fi
-          continue
-        fi
-        case "${RELATION}" in
-          ahead|identical)
-            STATUS=released
-            REASON=release_contains_merge_commit
-            RELEASE_TAG="${TAG}"
-            break
-            ;;
-          diverged)
-            STATUS=unknown
-            REASON=release_history_diverged
-            ;;
-        esac
-      done < "${WORK_DIR}/release-refs.tsv"
-      write_pr "${STATUS}" "${REASON}" "${RELEASE_TAG}"
-    done
-    jq -s --arg tag "${LATEST_TAG}" --arg published "${LATEST_PUBLISHED_AT}" '
-      {version:1, loaded:true, has_release:true, latest_tag:$tag,
-       latest_published_at:$published, reason:null, prs:.}
-    ' "${RESULTS}" > "${OUT}"
+- name: Download triage evidence for investigation
+  uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+  with:
+    artifact-ids: ${{ needs.triage_evidence.outputs.artifact_id }}
+    path: /tmp/gh-aw/agent
+    merge-multiple: true
 tools:
   cache-memory: true
   github:
@@ -1233,7 +1721,7 @@ Read the full issue title and body for issue **#${{ github.event.inputs.issue_nu
 
 ### Human Reopen Override
 
-If the state history and earlier workflow comments show that this agentic triage workflow previously closed the issue, and a person subsequently reopened it, treat that reopen as an explicit request for human review. Confirm the workflow closure by correlating a prior triage comment that says the workflow is closing the issue with the subsequent close event by the workflow actor; do not attribute another automation's closure to this workflow.
+If the state history and earlier workflow comments show that this agentic triage workflow previously closed the issue, and a person subsequently reopened it, treat that reopen as an explicit request for human review. Correlate this workflow's prior triage authorization comment and native close-body comment with the subsequent close event by the workflow actor. Older workflow comments may say "closing" rather than "authorized". Authorization alone is not evidence that a native close succeeded; require the close event. Do not attribute another automation's closure to this workflow.
 
 - Set a **human-reopened-after-agent-closure** flag for the rest of the run.
 - Never call `close-issue` for this issue again, with any `state_reason`. This veto applies to both duplicate and completed closures and to manual reruns because the reopen remains in the issue timeline.
@@ -1305,12 +1793,9 @@ Finding a candidate above does **not** by itself mean you close. Closing is a se
 
 **Bias toward leaving open.** Wrongly closing a valid issue is much worse than leaving a duplicate open. Whenever you are not **highly confident** it is the same root cause, do not close — downgrade to *Possible duplicate* and link it instead. Never close based on surface or topic similarity alone.
 
-**The search record is rendered for you; do not write it yourself.** A step that ran before you rendered the duplicate-search audit trail to `/tmp/gh-aw/agent/triage-audit-block.md`. In the collapsed **"What this triage looked at"** accordion at the bottom of your Step 6 comment:
+**The search record is rendered for you; do not write it yourself.** Read `/tmp/gh-aw/agent/triage-audit-block.md` for the trusted duplicate-search audit. The output gate inserts its own verified copy into the final comment. In `add_comment.data.audit`, list only the other sources you actually opened and your candidate verdicts, identified by issue number or file path. Do not repeat the computed audit or counts.
 
-1. Read that file (`cat /tmp/gh-aw/agent/triage-audit-block.md`) and paste its contents **verbatim** as the opening lines of the accordion. Do not reformat it, re-order it, collapse its lines together, shorten an issue list, or re-derive any part of it from `issue-candidate-index.json`. It is already correct; any difference between that file and your comment is a defect, and issue numbers in particular must appear exactly as rendered.
-2. Below the pasted block, list the other sources you actually opened (issues, source files, releases), identified by issue number or file path.
-
-**Never describe your own searching, anywhere in the comment.** Do not name a query you ran, and do not state that you ran, re-ran, repeated, or supplemented any search — not in the accordion, and not in the visible bullets. The pasted block is the entire published search record, because it is the only part backed by a file a maintainer can check. If your own searching surfaced a candidate the prefetch missed, report it as a finding in the visible bullets — the issue number and why it matches — never as a description of the search that found it. Report what you found, not what you did.
+**Never describe your own searching in the findings or audit.** The trusted audit block is the published search record. If your investigation surfaced a candidate the prefetch missed, report the issue number and why it matches, not the query that found it.
 
 If the index failed to load and you were also unable to run any search, say exactly that in the visible comment ("No duplicate search was performed") rather than reporting that none were found; those are different statements and only one of them is true.
 
@@ -1371,16 +1856,18 @@ The `name` values below are illustrative. Match on the *concept*, then emit the 
 
 ### Release-state labels
 
-AVM tracks where a fix has got to with three labels. Apply the one that matches the evidence, and only that one:
+AVM tracks fixes with three labels. You may request "Status: In PR" for an open confirmed fix. Only the trusted gate may generate the two release-state labels:
 
 | State you established | Label to match |
 |---|---|
 | A fix for this issue exists in an **open, unmerged** PR | the "Status: In PR" label |
-| A confirmed fix has a computed per-PR status of `awaiting_release` | the "Status: Awaiting Release To Be Cut" label |
-| A confirmed fix has a computed per-PR status of `released` and no closure veto applies | the "Status: Fixed" label, alongside closing the issue |
+| Fresh selected-PR proof is `awaiting_release` | Gate generates "Status: Awaiting Release To Be Cut"; no closure |
+| Fresh selected-PR proof is `released` and no veto applies | Gate generates "Status: Fixed" alongside completed closure |
 | Release membership is `unknown`, missing, failed, or incomplete | Neither release-state label; leave the issue open and explain the uncertainty |
 
 AVM defines "Status: Awaiting Release To Be Cut" as *"This is fixed in the main branch but not in the latest release, will be fixed with next release cut"*. It is the state that keeps an issue open and visible to whoever cuts the next release, which is why an unreleased fix is labelled rather than closed.
+
+Never emit either reserved release label in `add-labels`, even when the initial proof is positive. Submit the exact fixing PR in the mandatory comment's typed decision instead.
 
 ### Critical Label Rules
 
@@ -1476,10 +1963,10 @@ The load or screening is incomplete when that rendered line reports the contract
 - **Conservatively block two specific write actions for this run:**
   1. Do not close the issue as `completed` under **Close an Issue That Is Already Fixed** below.
   2. Do not append `Fixes #<issue-number>` to any PR under **Link an Unlinked Fix PR** below.
-- **Labels, the issue type, and the triage comment are unaffected** — continue to apply `add-labels`, `set-issue-type`, and post the Step 6 comment normally.
+- **Unrelated labels, the issue type, and the triage comment are unaffected** — continue with those native requests and the Step 6 comment. The gate also withholds both reserved release labels while collection or screening is incomplete.
 - **Explain the veto in the triage comment**: state that the deterministic evidence load or your screening was incomplete and that confirmed-fix closure and PR linking were skipped this run. Never claim that evidence was truncated merely because displayed output was shortened.
 
-This veto applies only to the two write actions above. It does **not** apply to and must never weaken the **Duplicate Closure Flow** in Step 2: a duplicate closure (`close-issue` with the `duplicate` state reason) is decided solely by the duplicate-confidence rules in Step 2, is independent of this file, and remains fully allowed when the duplicate match is conclusive **even if this evidence load is missing, incomplete, or failed** — including when a separately discovered fix candidate is still open or unmerged. Missing or inconclusive fix-PR evidence must never downgrade or skip an otherwise-conclusive duplicate closure.
+This PR-evidence veto covers fix-completion, reserved release labels, and PR linking. It does **not** apply to and must never weaken the **Duplicate Closure Flow** in Step 2: duplicate closure is independent of fix-PR evidence and remains allowed when the duplicate match is conclusive, its own duplicate-search contract passed, and no human-reopen/history veto applies — even if a separately discovered fix candidate is still open or unmerged. Missing or inconclusive fix-PR evidence must never downgrade an otherwise-conclusive duplicate closure.
 
 ### Link an Unlinked Fix PR
 
@@ -1491,7 +1978,7 @@ If a PR is a **confirmed fix**, is clearly intended to resolve this issue, and i
    Fixes #<issue-number>
    ```
 
-2. Mention the PR-body update in the triage summary.
+2. Identify that PR in the typed decision with `fix_confidence: confirmed`, and include its number in `fully_inspected_prs`. The gate reports the PR-body append as authorized, not already performed.
 
 Do not add the marker to more than one PR per run. Do not add it when the PR only partially addresses the issue, when multiple PRs are jointly required, or when confidence is below the **confirmed fix** tier. An open confirmed-fix PR may be linked, but the issue must remain open until the PR is merged. Do not perform this action at all when the **Incomplete or Failed Evidence Load or Screening** veto above is active.
 
@@ -1501,7 +1988,7 @@ Do not add the marker to more than one PR per run. Do not add it when the PR onl
 
 Do not judge release state from a PR body, a changelog, an earlier comment, or the age of the fix. It is computed for you.
 
-`/tmp/gh-aw/agent/release-status.json` holds per-PR evidence from the validated candidate index:
+`/tmp/gh-aw/agent/release-status.json` holds initial per-PR evidence from the validated candidate index. This is investigation context, **not an eligibility list or final authorization**:
 
 | field | meaning |
 |---|---|
@@ -1520,9 +2007,9 @@ Read the entry for that exact PR number. For example, after independently identi
 jq --argjson number 270 '{loaded,has_release,latest_tag,reason,pr:([.prs[] | select(.number == $number)] | if length == 1 then .[0] else {number:$number,status:"unknown",reason:"missing_or_ambiguous_pr_evidence",release_tag:null} end)}' /tmp/gh-aw/agent/release-status.json
 ```
 
-- **`released` with `loaded: true` and a nonempty `release_tag`:** GitHub confirmed that this merged PR targets the default branch. Its merge result is an ancestor of both the pinned default-branch commit and the named release commit. Only this result permits fixed-as-completed closure.
-- **`awaiting_release` with `loaded: true`:** The merge result is on the default branch, and every published stable release is a strict ancestor of that merge result. None contains it. Apply the awaiting-release label and leave the issue open.
-- **`unknown`, missing/duplicate entry, missing file, parse failure, or `loaded: false`:** Leave the issue open. Do not apply either release-state label. State the reason and what remains unverified. A separately discovered PR outside the prefetched index has no computed proof in this run and remains unknown.
+- **`released` with `loaded: true` and a nonempty `release_tag`:** The initial lookup proved that the PR's merge result is an ancestor of the default branch and that published stable release. Final verification must still succeed for this exact PR.
+- **`awaiting_release` with `loaded: true`:** Initially, the merge result was on the default branch and every published stable release strictly preceded it. A release may have been published since; request fresh evaluation.
+- **`unknown`, missing/duplicate entry, missing file, parse failure, or `loaded: false`:** No initial proof. This does not establish that the fix is unreleased. A PR found outside the initial index is fully eligible for fresh selected-PR verification.
 
 The pre-step checks all stable releases newest-first and stops when one proves inclusion. It resolves each tag once, then compares exact commits using GitHub's ancestry summary. It never enumerates comparison commits or scrapes PR numbers from commit messages. Normal merges, squash merges, and GitHub rebase merges use the PR's post-merge `merge_commit_sha`; unmerged test-merge commits are rejected.
 
@@ -1532,28 +2019,13 @@ The lookup permits at most 200 API invocations and 180 seconds before refusing n
 
 The file deliberately exposes no raw commit-SHA list. You may inspect commits while investigating a PR, but commit identity alone does not establish which change fixed the issue. Dates, changelogs, PR bodies, missing commit-message references, and an absent list entry never prove release membership.
 
-In the triage comment, cite the fixing PR, its computed status and reason, and `release_tag` when released. Do not claim that this is the first containing release; the pre-step proves a containing release, not the earliest one.
+For a confirmed fixing PR, submit `release_action: evaluate_fix` with that exact positive `fixing_pr` and `fix_confidence: confirmed` in `add_comment.data`. Include it in `fully_inspected_prs`, including when it is absent from the initial index. Do this even if initial release evidence is missing or unknown. Missing initial membership is not incomplete discovery; failed collection or unfinished mandatory screening still vetoes release-dependent writes.
 
-Close the issue as `completed` only when the fix is **confirmed**, the Human Reopen Override is not active, the **Incomplete or Failed Evidence Load or Screening** veto is not active, **and the fix is released** by the test above.
+Never submit native `close-issue` with reason `completed`, never submit either reserved release label, and never create a proof file. Those direct requests are protocol violations and cannot be rescued by a different valid decision. Model-run Git commands and initial positive results never replace fresh proof.
 
-When the fix is confirmed and its computed status is **`awaiting_release`**, do all of this and nothing more:
+After your work, the trusted gate verifies that exact PR once using the same bounded positive ancestry algorithm. `released` authorizes completed closure and Fixed when no veto applies; `awaiting_release` authorizes only Awaiting Release; unknown or failed proof authorizes neither. The gate supplies the exact PR/tag closure body and reopen invitation. Native handlers post the body before closing. A tag is a proven containing release, not necessarily the first containing release.
 
-- **Leave the issue open.** Never use `close-issue` on an unreleased fix, however conclusive the evidence.
-- Apply `Status: Awaiting Release To Be Cut :scissors:` with `add-labels` — AVM defines it as *"This is fixed in the main branch but not in the latest release, will be fixed with next release cut"*, which is exactly this state. Emit it only if that name is present in `repo-labels.json`.
-- In the triage comment, name the fixing PR, state that the fix is on the default branch, and name `latest_tag` as the most recent release that does **not** contain it.
-- Do not ask a maintainer to cut a release in the comment. The label is the signal AVM already uses for this; a second request in prose is noise.
-
-Before closing a released fix, post the Step 6 triage comment identifying the PR and the proven `release_tag`, and recommend that version. Then use `close-issue` with `state_reason: completed`. Do not set `duplicate_of` on a fix-confirmed closure. Release-proof requirements affect only fixed-as-completed decisions, never the separate duplicate-confidence rules.
-
-**The `close-issue` body is posted as its own comment, directly beneath your triage comment, and it is what the reporter reads as the reason their issue closed.** Give it two sentences and nothing more: what fixed the issue and in which release, then the reopen invitation.
-
-```
-Fixed by PR #270, which migrated diagnostic settings to `azapi_resource` and removed the deprecated `metric` attribute. Released in v0.8.2.
-
-If this is still happening on v0.8.2 or later, please reopen with your module version and a configuration snippet.
-```
-
-That second sentence is not a courtesy. A reopen by a human is the only trigger for the **Human Reopen Override**, which permanently blocks this workflow from closing the issue again. Omit it and the reporter has no way of knowing that route exists, so the one safeguard against a wrong closure never engages. A `close-issue` body without it is incomplete.
+In `findings`, explain why the PR fixes the reported behavior from its actual diff. Do not predict the final release result, narrate actions as already performed, or ask a maintainer to cut a release. Semantic relevance remains your responsibility; the gate proves release membership, not semantic truth.
 
 Do **not** close for an open or draft PR, an unmerged branch, a merely likely match, a partial fix, conflicting evidence, a fix whose default-branch inclusion cannot be verified, or a fix that is merged but unreleased. When uncertain, leave the issue open and explain what a maintainer should verify.
 
@@ -1586,213 +2058,62 @@ Once you have identified what the issue is about, attempt to investigate the roo
 
 **Do not emit any safe outputs until ALL analysis steps (Steps 1–5) are complete.**
 
-ALWAYS post **exactly one new** comment on the issue using the `add-comment` safe output, even if no triage actions were taken. **This comment is mandatory and is the primary deliverable of this workflow — a run that emits `add-labels` or `set-issue-type` without also emitting `add-comment` is a failed run.** Emit `add-comment` even when the issue is spam, invalid, unintelligible, a duplicate, or when you took no other action. On a manual rerun, reassess the issue from scratch instead of trusting the previous triage result. Before posting the new result, the `add-comment` handler marks older comments from this same `issue-triage` workflow as outdated and minimizes them. It identifies workflow-owned comments using their hidden `gh-aw-workflow-id` metadata, so human comments and comments from other workflows are not affected. The comment must follow this exact format:
+ALWAYS emit **exactly one** target-issue `add-comment`, including spam, unintelligible reports, duplicates, and no-op triage. Attach the mandatory `data` object below. On reruns, reassess from current evidence; the native handler still hides older workflow-owned triage comments.
 
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
+The trusted gate replaces `body` entirely. Supply a placeholder such as `Structured triage findings submitted for trusted action evaluation.` It is never published. The gate renders requested/authorized/blocked actions, verified evidence counts and search audit, then your separate semantic findings and additional audit.
 
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
+All ten `data` properties are mandatory:
 
-<summary of actions as bullet points>
+| Property | What you supply |
+|---|---|
+| `version` | Integer `1` |
+| `fixing_pr` | Exact selected PR number, or integer `0` for no selected PR |
+| `fix_confidence` | `none`, `confirmed`, `related`, or `partial` |
+| `release_action` | `evaluate_fix` for a confirmed fixing PR requiring release verification; otherwise `none` |
+| `human_reopen_override` | Step 1's boolean conclusion, never omitted |
+| `screening_complete` | Whether all required/plausible full inspections and inventory screening finished |
+| `fully_inspected_prs` | Unique positive integers for every fully inspected PR; include the selected PR even outside the initial index |
+| `screened_inventory_prs` | Unique positive integers for every screened open/merged inventory PR |
+| `findings` | Concise Markdown explaining the issue, duplicate verdicts, semantic fix relevance, related/partial PRs and source-backed advice |
+| `audit` | Additional sources you opened and candidate verdicts; account for every mandatory comparison, including unrelated candidates |
 
-<details>
-<summary><b>🔎 What this triage looked at</b></summary>
+These lists declare your work; they do not prove you inspected or understood a diff. Never assert semantic confirmation because the release checker reports `released`.
 
-<paste the contents of /tmp/gh-aw/agent/triage-audit-block.md verbatim here, then the contents of /tmp/gh-aw/agent/triage-screening-status.md verbatim, then the not-related must_compare line, then the key sources you opened — issues, source files, releases>
+Keep `findings` concise (aim for 1,500 characters) and factual. Include links and file references where they change the reader's next step. Report every plausible PR as confirmed, related, partial, or not relevant with a reason. Put copyable code in fenced blocks with language tags. Explain why a possible duplicate is not conclusive. Do not copy prior triage claims without rechecking current source.
 
-</details>
-```
-
-The visible bullet points stay focused on conclusions; the collapsed **"What this triage looked at"** accordion is where the prefetched query list and the sources you opened go, so a maintainer can audit coverage without it cluttering the comment.
-
-**Accordion rendering rules (important):**
-- The `<details>` block is **collapsed by default** — do not add the `open` attribute.
-- You **must** leave a blank line immediately after the `</summary>` line and immediately before the closing `</details>` line. Without these blank lines GitHub will not render the Markdown inside — bullet lists and code fences will come out broken.
-- Paste the rendered audit block verbatim, then list the sources you actually opened, not a generic placeholder. If the index did not load and you opened no sources (e.g. a pure no-op triage), omit the accordion.
-
-If the issue has already been triaged, do not skip analysis. Publish the current result after completing Steps 1-5. Only when there is genuinely nothing actionable to report, post:
-
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
-
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
-
-- Issue assessed, no input from GitHub agentic workflow agent.
-```
-
-The bullet points should include:
-
-- **Duplicate check result:** Report only the candidates that carry a verdict a maintainer would act on — the confirmed duplicate, any possible duplicate, and anything genuinely related — with links and a few words of reason. If closing as duplicate, state this clearly with the link. Every remaining `.must_compare` number still has to be accounted for, but as a single "not related" line inside the collapsed accordion, not here. If nothing came back related, this bullet is one sentence.
-- **Issue type:** Name the type you set, in one short line — you set one on every run, so this is never "no change needed". Mention a previous value only if `/tmp/gh-aw/agent/issue-type.txt` literally contains it; a run that reported "already set to `Bug`" while that file read `NONE` is the defect this wording exists to prevent.
-- **Labels applied:** List only the labels you **added** in this run, with a brief justification for each (e.g., "Applied `bug` — issue reports a failed `terraform apply`"). **Do NOT list or re-justify labels that were already on the issue.** If you added no new labels, say so in a single short line (do not enumerate the existing labels).
-- **No labels applied:** If no labels could be confidently determined, state this.
-- **Labels skipped:** If label definitions could not be loaded, state "Labels could not be applied due to a data loading error."
-- **Suggested fix:** If you identified a likely root cause or potential fix from investigating the source code, include it with specific file/line references. If the issue is a question or consideration rather than a bug, note that. If you could not determine a fix, state that further investigation is needed.
-
-  Put any configuration, HCL, or command a reader might copy in a fenced code block with a language tag, never inline in the prose. Keep the surrounding explanation to a sentence before and, if needed, a sentence after:
-
-  ````
-  As a workaround, add the pattern to `managed_devops_pool_retry_on_error`:
-
-  ```hcl
-  managed_devops_pool_retry_on_error = [
-    "Missing Resource Identity After Update"
-  ]
-  ```
-
-  The longer-term fix is to add this pattern to the variable's default in `variables.tf`.
-  ````
-- **Already fixed:** If a recent release or merged PR already addresses this issue, tell the user which version or PR contains the fix and recommend they upgrade. If nothing does, this bullet is one short sentence saying so. Do not list, count, or characterise the PRs you inspected to reach that conclusion — the rendered screening line in the accordion already records exactly which ones were mandatory, so restating them here is duplicate evidence, not reassurance.
-- **PR linked:** If you appended `Fixes #<issue-number>` to a confirmed-fix PR, identify the PR and state that it is now linked. Do not claim an ambiguous candidate was linked.
-- **Related or partial PRs:** Always report any PR you classified as **likely related fix** or **related-only** in Step 4, with a link and a one-line reason, even though you deliberately did not link or close against it. Do not omit these just because no write action was taken on them — surfacing them is the point, so a maintainer can judge candidates you intentionally left out of the automated decision. Every candidate named as lexically plausible in the rendered screening-status line must appear here unless you reported it as a confirmed fix; if you judged one irrelevant, say so and why, rather than leaving it unmentioned.
-- **PR-evidence and screening status:** This line is rendered for you, and it belongs **inside the collapsed accordion**, not in the visible bullets — it is machine evidence for auditing a run, not a finding a maintainer needs to read. Handling rules are under the accordion bullet below.
-- **Closure:** Required on any run that emits `close-issue`, with no exception. One line: that you are closing, and the evidence — the release that carries the fix, or the canonical issue for a duplicate. The reopen invitation does **not** go here; for a fix-confirmed closure it belongs in the `close-issue` body, and for a duplicate it is the `> **Note:**` blockquote below. Worked examples for both are in Step 6.
-- **Awaiting release:** Only when the fixing PR's computed status is `awaiting_release`, name that PR, state that it is on the default branch, name `latest_tag`, and explain that the issue stays open until a release carries the fix.
-- **Release unknown:** When release membership cannot be verified, name the PR and computed reason, or explain that its entry is missing. Leave the issue open without calling it fixed or awaiting release.
-- **Human reopen override:** If this workflow previously closed the issue and a person later reopened it, state that the issue will remain open for human review even if the agent found a duplicate or an existing fix.
-- **What this triage looked at (collapsed accordion):** At the very bottom of the comment, include a collapsed `<details>` block containing, in order: the verbatim contents of `/tmp/gh-aw/agent/triage-audit-block.md`; the verbatim contents of `/tmp/gh-aw/agent/triage-screening-status.md`; one line accounting for any `.must_compare` candidates you judged not related; the deterministic PR-evidence sources that fired (e.g. timeline cross-reference, exact issue-number match in a title/body/comment, commit-message reference, commit-body `Refs #N`); and the key sources you inspected. This is the run's audit trail — keeping it here is what lets the visible summary stay short.
-
-  Paste both rendered files **verbatim**, exactly as written, including every count and candidate number. Do not re-derive any figure, do not shorten or omit a candidate list, and do not replace a list with a summary such as "none this run" — the rendered lines are already correct, and any difference between those files and your comment is a defect. If, and only if, you fully inspected candidates beyond the ones the screening line names, append one sentence naming those extra numbers. If the screening line reports that the index did not load, that is a failed evidence load: say so in the **visible** bullets, stating that confirmed-fix closure and PR linking were skipped (see Step 4 — Incomplete or Failed Evidence Load or Screening) while noting duplicate-closure decisions were unaffected. Never report truncation based on display length.
-
-Keep the comment concise and factual. Do not speculate or add unnecessary detail.
-
-**Length.** The visible part of the comment — everything above the accordion — should read in well under a minute. Aim for roughly 1,500 characters and treat 2,500 as the ceiling; past that, the finding is being buried rather than explained. The accordion is exempt, which is exactly why the exhaustive lists live there. To stay inside it:
-
-- One bullet per finding. Omit a bullet entirely when it has nothing to report, rather than writing a sentence to say so.
-- Name a specific issue or PR when it changes what the reader should do. Do not enumerate what you ruled out — the accordion already proves the coverage.
-- Never restate the same evidence in two bullets.
-- Do not narrate your own process ("I checked all N candidates", "searches were run"). The accordion is the record of process.
-- Write bare `#123` only when you intend GitHub to expand it into that item's title. For any list of more than two or three numbers, use `` `#123` `` so the list stays a list instead of rendering as a paragraph of titles.
+Neither `findings` nor `audit` may claim that labels/type were applied, the issue was closed, a PR was linked, or a release-dependent action will succeed. Do not include computed counts or an action narrative. Those belong to the trusted renderer and subsequent native execution record.
 
 ### Duplicate Closure Flow
 
-When you are **highly confident** an issue is a confirmed duplicate of another (the **same underlying problem / root cause** — see Step 2's *Confirmed duplicate* tier) and the Human Reopen Override is not active, follow this exact sequence:
+After the mandatory typed comment, a highly confident duplicate may still use native `close-issue` with `state_reason: duplicate`, a positive integer `duplicate_of`, and body exactly `Duplicate of #<canonical-issue-number>`. Use the Step 2 canonical-selection rule. Set `release_action: none`; never combine duplicate and release-completion requests. The gate supplies the reopen note in the triage comment and preserves the exact duplicate marker. Human-reopen and missing-history vetoes still apply; missing fix-PR proof or incomplete PR screening does not itself prevent duplicate closure.
 
-1. **First**, post your triage comment using `add-comment`. The comment MUST include a note advising the issue creator to reopen if the closure was incorrect:
+### Example: freshly evaluate an older fixing PR
 
-   ```
-   > **Note:** If you believe this issue was incorrectly closed as a duplicate, please reopen it and explain how it differs from the linked issue.
-   ```
+The model found PR #56 by reading its diff. It is absent from the initial index, whose mandatory PR #227 was unrelated and fully inspected. The request is:
 
-2. **Then**, close the issue using `close-issue`. Its `body` must be exactly the following single-line GitHub marker, with no heading or additional text:
-
-   ```
-   Duplicate of #<canonical-issue-number>
-   ```
-
-   The `close-issue` handler accepts a per-closure `state_reason`. Always set `state_reason: duplicate` here, and set `duplicate_of` to the canonical issue number so GitHub records the native duplicate link. All explanation belongs in the separate `add-comment` triage summary.
-
-   Always reference the canonical issue chosen by the Step 2 rule — the lowest-numbered match that is still open.
-
-### Example Comment (not a duplicate)
-
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
-
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
-
-- **Duplicate check:** No exact duplicates found. Similar issue: #1234 (related to a similar Terraform module behavior).
-- **Labels applied:**
-  - `bug` — issue reports unexpected behavior or a failed `terraform apply`
-  - `needs-more-info` — issue does not include enough information to reproduce or investigate
-- **Suggested fix:** The issue appears to relate to the module implementation in this repository. Compare the resource and variable patterns with the hub-and-spoke VNet module (when applicable) (`Azure/terraform-azurerm-avm-ptn-alz-connectivity-hub-and-spoke-vnet`) to confirm whether the local implementation is missing validation or using a different pattern.
-
-<details>
-<summary><b>🔎 What this triage looked at</b></summary>
-
-- Prefetched duplicate searches (from `issue-candidate-index.json`):
-  - `apply failed` → #101, #145
-  - `validation subnet` → #145
-  - `address_space error` → no results
-- Candidates requiring explicit comparison: #101, #145
-- Reviewed source: `main.tf`, `variables.tf` in this repository
-- Checked the latest release notes for a prior fix
-
-</details>
+```json
+{
+  "type": "add_comment",
+  "item_number": ${{ github.event.inputs.issue_number || github.event.issue.number }},
+  "body": "Structured triage findings submitted for trusted action evaluation.",
+  "data": {
+    "version": 1,
+    "fixing_pr": 56,
+    "fix_confidence": "confirmed",
+    "release_action": "evaluate_fix",
+    "human_reopen_override": false,
+    "screening_complete": true,
+    "fully_inspected_prs": [56, 227],
+    "screened_inventory_prs": [227],
+    "findings": "- PR #56 adds the caller override to the affected assignment; its test exercises the reported input. PR #227 concerns another input and does not resolve this report.",
+    "audit": "- Read PR #56 diff and tests; inspected PR #227 and its changed files."
+  }
+}
 ```
 
-### Example Comment (possible duplicate — left open)
+Use actual inventory/inspection lists for your run, not these illustrative numbers. Do not also emit completed closure or Fixed. If fresh verification finds #56 in `v0.1.2`, the gate authorizes completion and Fixed and supplies a close body naming #56, `v0.1.2`, and the reopen invitation. If the fresh lookup fails, the comment reports unverified release membership and no automated closure. An initial positive for #227 cannot authorize #56.
 
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
-
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
-
-- **Possible duplicate of #4321** — this appears to describe the same underlying problem, but it also raises a separate question about the expected behavior, so I have left it open for a maintainer to confirm rather than closing it. Also compared #4102 — related, but it concerns the subnet delegation path rather than address-prefix validation, so it is a different root cause.
-- **Labels applied:**
-  - `bug` — issue reports a failed `terraform apply`
-  - `question` — the issue also asks whether the current behavior is intended
-
-<details>
-<summary><b>🔎 What this triage looked at</b></summary>
-
-- Prefetched duplicate searches (from `issue-candidate-index.json`):
-  - `subnet validation` → #4321
-  - `expected behavior` → #4321, #4102
-  - `address prefix` → no results
-- Candidates requiring explicit comparison: #4321, #4102
-- Opened and compared #4321 to assess whether it is the same root cause
-
-</details>
-```
-
-### Example Comment (closing as duplicate)
-
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
-
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
-
-- **Duplicate:** Closing as duplicate of #5678 — both issues report the same Terraform module failure with similar error messages and context. Also compared #5012 — same error text, but it was raised against the parent module rather than this one, so it is not related.
-- **Labels applied:**
-  - `bug` — issue reports a module error or failed `terraform apply`
-  - `duplicate` — if this label exists in the repository label set and the issue is being closed as a duplicate
-
-> **Note:** If you believe this issue was incorrectly closed as a duplicate, please reopen it and explain how it differs from the linked issue.
-
-<details>
-<summary><b>🔎 What this triage looked at</b></summary>
-
-- Prefetched duplicate searches (from `issue-candidate-index.json`):
-  - `module failure` → #5678, #5012
-  - `apply error` → #5678
-  - `provider timeout` → no results
-- Candidates requiring explicit comparison: #5678, #5012
-- Compared against #5678 (same error and context); confirmed #5678 is the oldest matching issue
-
-</details>
-```
-
-**Example — closing an issue a released fix already resolved.** This is the shape that was missing, and closures without it were omitting the `Closure:` bullet roughly one run in four. Both calls are shown, because the reopen invitation lives in the `close-issue` body rather than the comment:
-
-`add-comment`:
-
-```
-## 🤖 GitHub Agentic Workflow Automated Triage 🤖
-
-> ⚠️ _This triage was generated automatically by an AI agent and may be incomplete or inaccurate._
-
-- **Duplicate check:** No duplicates found. Compared #612 — same resource, different root cause.
-- **Issue type:** Set to `Bug` (previously `NONE`).
-- **Labels applied:** None new — the issue already carries `Type: Bug :bug:`.
-- **Already fixed:** PR #270 replaced the deprecated `metric` attribute with `enabled_metric`. Its computed status is `released`, reason `release_contains_merge_commit`, with `release_tag: v0.8.2`.
-- **Closure:** Closing as completed — the fix is released in `v0.8.2`, so upgrading resolves this.
-
-<details>
-<summary><b>🔎 What this triage looked at</b></summary>
-
-<the rendered audit block, the rendered screening line, then the sources you opened>
-
-</details>
-```
-
-`close-issue` with `state_reason: completed`:
-
-```
-Fixed by PR #270, which replaced the deprecated `metric` attribute with `enabled_metric`. Released in v0.8.2.
-
-If this is still happening on v0.8.2 or later, please reopen with your module version and a configuration snippet.
-```
+For no selected fix, use `fixing_pr: 0`, `fix_confidence: none`, `release_action: none`; still populate the other fields. A missing/invalid decision produces a fallback comment, never permission inferred from prose.
 
 ---
 
@@ -1807,14 +2128,13 @@ Every issue safe output carries it, in every combination — never only the firs
 ```json
 {"type": "add_labels", "item_number": ${{ github.event.inputs.issue_number || github.event.issue.number }}, "labels": ["bug"]}
 {"type": "set_issue_type", "issue_number": ${{ github.event.inputs.issue_number || github.event.issue.number }}, "issue_type": "Bug"}
-{"type": "add_comment", "item_number": ${{ github.event.inputs.issue_number || github.event.issue.number }}, "body": "## 🤖 GitHub Agentic Workflow Automated Triage 🤖 …"}
 {"type": "close_issue", "issue_number": ${{ github.event.inputs.issue_number || github.event.issue.number }}, "state_reason": "duplicate", "duplicate_of": 4321, "body": "Duplicate of #4321"}
 ```
 
 `add-comment` and `add-labels` use `item_number`; `close-issue` and `set-issue-type` use `issue_number`. When updating a pull request, use that PR's number as `pull_request_number`. Before you emit anything, check each call you are about to make and confirm the number is present on all of them.
 
 - If you **close the issue** as a duplicate: Use `add-comment` for the triage summary **first**, then use `close-issue` with `state_reason: duplicate`, `duplicate_of: <canonical-issue-number>`, and a body of exactly `Duplicate of #<canonical-issue-number>`. See the Duplicate Closure Flow.
-- If you **close the issue** because it is conclusively fixed: Use `add-comment` for the triage summary **first**, then use `close-issue` with `state_reason: completed` and a body naming the fixing PR. Do not set `duplicate_of` on this path.
+- If a **confirmed fixing PR** needs release evaluation: Use the Step 6 typed `add-comment` decision with its exact number and `release_action: evaluate_fix`. Never emit native completed closure or either reserved release label; only the trusted gate may generate those.
 - If the **Human Reopen Override** is active: Never use `close-issue`, regardless of duplicate or fix confidence. Continue with any non-closing outputs and explain the veto in the triage comment.
 - If you find an unlinked **confirmed-fix PR**: Use `update-pull-request` with `pull_request_number`, `operation: append`, and a body of exactly `Fixes #<issue-number>`. Do not update likely or merely related candidates.
 - Use `set-issue-type` with `issue_number` and exactly one of `Bug`, `Feature`, or `Task` on **every** run. Emit it unconditionally — never skip it on the grounds that the type looks already correct. Those three strings are the entire allowed list; a usage question is `Task`, not `Question`.
@@ -1836,4 +2156,4 @@ Every issue safe output carries it, in every combination — never only the firs
 - Apply the same conservative standard to existing fixes. Only append `Fixes #N` or close as completed when the PR-to-issue relationship is directly supported by the issue details and the actual code change.
 - A person's reopen after this workflow closed an issue always takes precedence over the agent's duplicate and existing-fix conclusions. Once detected in the timeline, leave the issue open for human review on every later run.
 - When composing your triage comment, never reproduce `@mentions` from the issue body or linked content.
-- This workflow is in **early stages** and is **AI-generated**. Always include the disclaimer line shown in Step 6 at the top of every triage comment (immediately under the heading), so issue authors know the triage is automated and may be imperfect.
+- This workflow is in **early stages** and is **AI-generated**. The trusted renderer supplies the automated-triage disclaimer on every comment.
