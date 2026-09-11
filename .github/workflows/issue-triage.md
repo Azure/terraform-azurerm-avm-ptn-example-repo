@@ -64,13 +64,16 @@ safe-outputs:
         type: boolean
       screening_complete:
         type: boolean
+        description: True only after all inventory rows were actually screened and all required or plausible PRs were fully inspected.
       fully_inspected_prs:
         type: array
+        description: PRs whose full diff and supporting evidence you actually inspected. Include the selected fix even outside the index; this is not the inventory screening list.
         items:
           type: integer
           minimum: 1
       screened_inventory_prs:
         type: array
+        description: Every open or merged inventory PR you actually screened, including irrelevant rows and fully inspected inventory PRs. Never copy the full-inspection subset here or claim unread rows.
         items:
           type: integer
           minimum: 1
@@ -124,6 +127,13 @@ safe-outputs:
         const repository = process.env.TRIAGE_REPOSITORY;
         const issue = Number(process.env.TRIAGE_ISSUE);
         const positive = n => Number.isSafeInteger(n) && n > 0;
+        // Native target fields also accept decimal strings. Decision/proof PRs remain typed integers.
+        const targetNumber = value => {
+          if (positive(value)) return value;
+          if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+          const number = Number(value);
+          return positive(number) && String(number) === value ? number : null;
+        };
         const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
         if (!positive(issue) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !outputPath)
           throw new Error('Invalid trusted gate context');
@@ -210,7 +220,7 @@ safe-outputs:
         const targetKeys = ['item_number', 'issue_number', 'pr_number', 'pr-number', 'pull_number', 'pull_request_number', 'number'];
         const routingKeys = ['comment_id', 'commentId', 'comment-id', 'reply_to_id', 'target', 'discussion_number', 'discussion_id', 'pull_request_review_id', 'review_id'];
         function target(item, key, expected = issue) {
-          return item[key] === expected && targetKeys.every(k => item[k] === undefined || item[k] === expected) &&
+          return targetNumber(item[key]) === expected && targetKeys.every(k => item[k] === undefined || targetNumber(item[k]) === expected) &&
             routingKeys.every(k => item[k] === undefined) &&
             (item.repo === undefined || item.repo === repository) &&
             (item.repository === undefined || item.repository === repository);
@@ -236,10 +246,14 @@ safe-outputs:
           report.in_initial_index = trusted ? initial.some(p => p.number === data.fixing_pr) : null;
         }
         if (wantsRelease) report.requested.push('evaluate_fix');
+        report.missing_full_inspection = contracts && validData ? initial
+          .filter(p => index.required_inspection.includes(p) || p.lexical_relevance?.plausible === true)
+          .map(p => p.number).filter(n => !data.fully_inspected_prs.includes(n)) : null;
+        report.missing_inventory_screening = contracts && validData ? initial
+          .filter(p => p.open_inventory || p.merged_inventory)
+          .map(p => p.number).filter(n => !data.screened_inventory_prs.includes(n)) : null;
         const coverage = contracts && validData && data.screening_complete &&
-          initial.filter(p => index.required_inspection.includes(p) || p.lexical_relevance?.plausible === true)
-            .every(p => data.fully_inspected_prs.includes(p.number)) &&
-          initial.filter(p => p.open_inventory || p.merged_inventory).every(p => data.screened_inventory_prs.includes(p.number));
+          report.missing_full_inspection.length === 0 && report.missing_inventory_screening.length === 0;
         // An explicit human-reopen veto can only restrict actions, so retain it
         // even when another field made that comment's decision invalid.
         const humanVeto = comments.some(i => i.data?.human_reopen_override === true);
@@ -311,13 +325,14 @@ safe-outputs:
             if (Object.keys(item).some(key => !prAppendKeys.has(key))) {
               block('pr_append_extra_fields'); report.blocked.push('update_pull_request'); continue;
             }
-            if (coverage && positive(item.pull_request_number) && target(item, 'pull_request_number', item.pull_request_number) &&
+            const prNumber = targetNumber(item.pull_request_number);
+            if (coverage && positive(prNumber) && target(item, 'pull_request_number', prNumber) &&
                 item.operation === 'append' && item.body === `Fixes #${issue}` && validData &&
-                data.fix_confidence === 'confirmed' && data.fixing_pr === item.pull_request_number &&
-                data.fully_inspected_prs.includes(item.pull_request_number) && prCount++ < 1) {
+                data.fix_confidence === 'confirmed' && data.fixing_pr === prNumber &&
+                data.fully_inspected_prs.includes(prNumber) && prCount++ < 1) {
               const metadata = Object.fromEntries(prMetadataKeys.filter(key => Object.hasOwn(item, key)).map(key => [key, item[key]]));
               approved.push({ ...metadata, type: 'update_pull_request', repo: repository,
-                pull_request_number: item.pull_request_number, operation: 'append', body: `Fixes #${issue}` });
+                pull_request_number: prNumber, operation: 'append', body: `Fixes #${issue}` });
             }
             else { block('pr_link_veto'); report.blocked.push('update_pull_request'); }
           } else {
@@ -408,6 +423,8 @@ safe-outputs:
         actionLines.push(`Requested: ${report.requested.join(', ') || 'no release or closure request'}.`);
         actionLines.push(`Authorized native requests: ${report.authorized.join('; ') || 'none'}.`);
         if (report.reasons.length) actionLines.push(`Blocked or unavailable: ${report.reasons.join(', ')}.`);
+        if (report.missing_full_inspection?.length) actionLines.push(`Missing declared full inspections: ${report.missing_full_inspection.join(', ')}.`);
+        if (report.missing_inventory_screening?.length) actionLines.push(`Missing declared inventory screening: ${report.missing_inventory_screening.join(', ')}.`);
         if (!approved.some(i => i.type === 'close_issue')) actionLines.push('No automated closure is authorized; the issue is to remain open for review.');
         actionLines.push('Authorization is not execution: native handlers run next, and comment, label, type, PR-link and close operations are not atomic. Their results record what GitHub accepted.');
         // Deliberately never reuse or regex-edit the agent's old free-form body.
@@ -1899,8 +1916,8 @@ A pre-agent step has already fetched PR candidate evidence, validated it against
 ```bash
 jq '{loaded,complete,success,errors,candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,exact_required_inspection_count,exact_required_inspection_numbers,timeline_required_inspection_count,timeline_required_inspection_numbers,commit_required_inspection_count,commit_required_inspection_numbers,screening_index_path,index_version}' /tmp/gh-aw/agent/pr-candidate-status.json
 jq '{candidate_count,open_inventory_count,merged_inventory_count,required_inspection_count,required_inspection_numbers,inventory_only_count:(.open_inventory_screening | length),plausible_numbers:[(.required_inspection + .open_inventory_screening)[] | select((.open_inventory or .merged_inventory) and .lexical_relevance.plausible) | .number]}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
-jq '.required_inspection[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
-jq '.open_inventory_screening[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq -c '.required_inspection[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+jq -c '.open_inventory_screening[] | {number,title,sources,url,state,draft,merged,body_excerpt,file_names,open_inventory,merged_inventory,lexical_relevance}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
 ```
 
 You do not have to validate these files or reconcile their counts — schema, count, and status-versus-index agreement were all checked before you started. If any of it failed, the rendered line at `/tmp/gh-aw/agent/triage-screening-status.md` says so in place of the counts, and that is your signal to apply the evidence veto described below. Never parse a copied terminal/UI capture or a displayed/truncated rendering. **Visible output ending early is not evidence of truncation or failure.** Report a parser or API error only when a direct-path `jq` parse actually fails or the rendered status line says the contracts did not pass.
@@ -1922,7 +1939,26 @@ Complete **both phases**, never skipping or sampling:
 1. **Required-inspection phase:** Fully inspect every PR in `required_inspection`, including its real diff, complete changed-file list, commits, tests/checks, status, base branch, and review discussion. Exact references, timeline links, and commit mentions are candidates, never proof.
 2. **Inventory screening phase:** Screen every inventory candidate, open and merged. Required candidates with `open_inventory: true` or `merged_inventory: true` are screened by their mandatory full inspection; screen every entry in `open_inventory_screening` from its compact title/body/file signals. Fully inspect the real PR/diff for every entry marked lexically plausible and every additional candidate that your judgment finds plausible. Record inventory-only entries found irrelevant as screened without loading full diffs. When the reported behavior does not reproduce against current default-branch source, treat `merged_pr_inventory` as the primary place to look for the change that fixed it, and name that PR rather than concluding only that it was "possibly fixed earlier".
 
-Track `open_inventory_count` and `merged_inventory_count` from status, the plausible candidate numbers, and the fully inspected candidate numbers. Your screened total must equal `open_inventory_count` plus `merged_inventory_count`; every `required_inspection_number` and every plausible number must be fully inspected. Use these figures to drive your own inspection work — you do not retype them into the comment, because Step 6 publishes the pre-rendered `/tmp/gh-aw/agent/triage-screening-status.md` line instead. Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link. A candidate marked lexically plausible always appears in your write-up, either as a confirmed fix or under **Related or partial PRs** — never silently dropped because you judged it irrelevant.
+Track two separate lists as you work. Add a PR to `screened_inventory_prs` after reading its inventory signals and deciding whether it needs full inspection. Include irrelevant inventory rows and inventory PRs you fully inspected. Add a PR to `fully_inspected_prs` only after inspecting its real diff and supporting evidence. Required and plausible PRs need full inspection; unrelated inventory-only rows do not.
+
+For example, an inventory of 47 PRs may require only three full inspections. After doing that work, `screened_inventory_prs` contains all 47 numbers and `fully_inspected_prs` contains the three inspected numbers. Submitting only those three as screened leaves 44 rows unaccounted for. Finding a confirmed fix does not end inventory screening.
+
+Read large inventories in manageable batches, such as `.open_inventory_screening[0:10][]`, then `[10:20][]`, until every row is read. Keep a brief relevance verdict for each row in your working notes. Never mark a row screened from its number alone.
+
+The pre-rendered `/tmp/gh-aw/agent/triage-screening-status.md` reports collection counts, not your inspection work. Step 6 still requires both complete PR-number lists in `add_comment.data`. Populate them from work you actually did, never by copying the inventory or assuming a passed data contract proves inspection.
+
+Before emitting outputs, save your intended `data` object as `/tmp/gh-aw/agent/triage-decision.json` and check for missing work:
+
+```bash
+jq --slurpfile decision /tmp/gh-aw/agent/triage-decision.json '{
+  missing_inventory_screening: ([.required_inspection[], .open_inventory_screening[]] | map(select(.open_inventory or .merged_inventory) | .number) - $decision[0].screened_inventory_prs),
+  missing_full_inspection: (([.required_inspection[].number] + [.open_inventory_screening[] | select(.lexical_relevance.plausible) | .number] | unique) - $decision[0].fully_inspected_prs)
+}' /tmp/gh-aw/agent/pr-candidate-screening-index.json
+```
+
+This comparison finds missing declarations; it does not fill either list or prove semantic inspection. Read the missing candidates before adding their numbers. If you cannot finish, set `screening_complete: false`, retain only truthful lists, and explain the missing work. An empty result cannot override a failed collection or human-reopen veto.
+
+Classify all fully inspected candidates using the **Fix Confidence Tiers** below and report related/partial PRs even when they have no development link. Account for each lexically plausible candidate, including those you found irrelevant, with a reason.
 
 If the rendered status line reports that the contracts did not pass, or if a required or plausible candidate ends up not fully inspected, see **Incomplete or Failed Evidence Load or Screening** below.
 
@@ -1957,7 +1993,7 @@ Classify each candidate before taking any write action:
 
 The rendered status line at `/tmp/gh-aw/agent/triage-screening-status.md` is the authority on whether the deterministic evidence load succeeded. Do not infer failure or truncation from how much output a terminal or UI happens to display.
 
-The load or screening is incomplete when that rendered line reports the contracts did not pass, or when your own screening work falls short: a required candidate was not fully inspected, or a plausible candidate was not fully inspected. In that case:
+The load or screening is incomplete when that rendered line reports the contracts did not pass, or when your own screening work falls short. Any unread inventory row, unfinished required inspection, or unfinished plausible inspection makes screening incomplete. In that case:
 
 - **Continue the full read-only investigation.** Keep searching and reading issues, PRs, commits, and releases exactly as described above — an incomplete prefetch never excuses skipping analysis.
 - **Conservatively block two specific write actions for this run:**
@@ -2073,7 +2109,7 @@ All ten `data` properties are mandatory:
 | `human_reopen_override` | Step 1's boolean conclusion, never omitted |
 | `screening_complete` | Whether all required/plausible full inspections and inventory screening finished |
 | `fully_inspected_prs` | Unique positive integers for every fully inspected PR; include the selected PR even outside the initial index |
-| `screened_inventory_prs` | Unique positive integers for every screened open/merged inventory PR |
+| `screened_inventory_prs` | Unique positive integers for every actually screened open/merged inventory PR, including irrelevant rows and fully inspected inventory PRs; not just the full-inspection subset |
 | `findings` | Concise Markdown explaining the issue, duplicate verdicts, semantic fix relevance, related/partial PRs and source-backed advice |
 | `audit` | Additional sources you opened and candidate verdicts; account for every mandatory comparison, including unrelated candidates |
 
@@ -2089,7 +2125,7 @@ After the mandatory typed comment, a highly confident duplicate may still use na
 
 ### Example: freshly evaluate an older fixing PR
 
-The model found PR #56 by reading its diff. It is absent from the initial index, whose mandatory PR #227 was unrelated and fully inspected. The request is:
+The model found PR #56 by reading its diff. It is absent from this illustrative three-row inventory. The model screened PRs #32 and #33 as irrelevant and fully inspected mandatory PR #227. The request is:
 
 ```json
 {
@@ -2104,9 +2140,9 @@ The model found PR #56 by reading its diff. It is absent from the initial index,
     "human_reopen_override": false,
     "screening_complete": true,
     "fully_inspected_prs": [56, 227],
-    "screened_inventory_prs": [227],
+    "screened_inventory_prs": [32, 33, 227],
     "findings": "- PR #56 adds the caller override to the affected assignment; its test exercises the reported input. PR #227 concerns another input and does not resolve this report.",
-    "audit": "- Read PR #56 diff and tests; inspected PR #227 and its changed files."
+    "audit": "- Read PR #56 diff and tests; inspected PR #227 and its changed files. Screened #32 and #33: unrelated dependency updates."
   }
 }
 ```
