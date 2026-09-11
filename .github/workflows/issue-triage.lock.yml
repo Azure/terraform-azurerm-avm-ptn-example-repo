@@ -1,5 +1,5 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"780cf76f8211152f26f89c688bfa3c3e3860ac9c7223c7abb96db77ebecb3ed5","body_hash":"cc2daa5a4f6d8ee1c4d61c1aed7219cf732a40d18647ebba9bbf874c70275dc1","compiler_version":"v0.85.4","strict":true,"agent_id":"copilot","agent_model":"claude-sonnet-5","engine_versions":{"copilot":"1.0.78"}}
-# gh-aw-manifest: {"version":1,"secrets":["COPILOT_GITHUB_TOKEN","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN"],"actions":[{"repo":"actions/cache/restore","sha":"55cc8345863c7cc4c66a329aec7e433d2d1c52a9","version":"v6.1.0"},{"repo":"actions/cache/save","sha":"55cc8345863c7cc4c66a329aec7e433d2d1c52a9","version":"v6.1.0"},{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"820762786026740c76f36085b0efc47a31fe5020","version":"v7.0.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"2709137ea6c5b0e19aa621454dc643ea8dc526b1","version":"v0.85.4"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.27.44","digest":"sha256:0d727725c737b58c7bdf51f640cffb928385ec46517e0917c7f1a02f1bada8b4","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.27.44@sha256:0d727725c737b58c7bdf51f640cffb928385ec46517e0917c7f1a02f1bada8b4"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.44","digest":"sha256:b50fbadba138f6e9aba94aca09711335c489bb3b15861220cb66f6092e042dc7","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.44@sha256:b50fbadba138f6e9aba94aca09711335c489bb3b15861220cb66f6092e042dc7"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.27.44","digest":"sha256:83e48bbe12c634be8c228a576832fe45f66c529ac3659db92bddbcf2eeb6d627","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.27.44@sha256:83e48bbe12c634be8c228a576832fe45f66c529ac3659db92bddbcf2eeb6d627"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.4.8","digest":"sha256:38bbea36cdb46a3c9d04d1db05e672966f5239b431a2022eb35881688e5721d8","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.4.8@sha256:38bbea36cdb46a3c9d04d1db05e672966f5239b431a2022eb35881688e5721d8"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:0d9f1fb5fd6610c0ac1f5194a38e45a8a1e81f8a390d5142d8e4e6f26a4b3196","pinned_image":"ghcr.io/github/gh-aw-node@sha256:0d9f1fb5fd6610c0ac1f5194a38e45a8a1e81f8a390d5142d8e4e6f26a4b3196"},{"image":"ghcr.io/github/github-mcp-server:v1.8.0","digest":"sha256:d5a18c04b92714c309eb46a2305087e91a4dbd80420f6e462656699f95093520","pinned_image":"ghcr.io/github/github-mcp-server:v1.8.0@sha256:d5a18c04b92714c309eb46a2305087e91a4dbd80420f6e462656699f95093520"}]}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"223121982db93d68ab2dc8a745bb7d3f75d60b559fc0c0ddbaa0be820de9a159","body_hash":"cc2daa5a4f6d8ee1c4d61c1aed7219cf732a40d18647ebba9bbf874c70275dc1","compiler_version":"v0.85.4","strict":true,"agent_id":"copilot","agent_model":"claude-sonnet-5","engine_versions":{"copilot":"1.0.78"}}
+# gh-aw-manifest: {"version":1,"secrets":["COPILOT_GITHUB_TOKEN","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN"],"actions":[{"repo":"actions/cache/restore","sha":"55cc8345863c7cc4c66a329aec7e433d2d1c52a9","version":"v6.1.0"},{"repo":"actions/cache/save","sha":"55cc8345863c7cc4c66a329aec7e433d2d1c52a9","version":"v6.1.0"},{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"820762786026740c76f36085b0efc47a31fe5020","version":"v7.0.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"2709137ea6c5b0e19aa621454dc643ea8dc526b1","version":"2709137ea6c5b0e19aa621454dc643ea8dc526b1"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.27.44","digest":"sha256:0d727725c737b58c7bdf51f640cffb928385ec46517e0917c7f1a02f1bada8b4","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.27.44@sha256:0d727725c737b58c7bdf51f640cffb928385ec46517e0917c7f1a02f1bada8b4"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.44","digest":"sha256:b50fbadba138f6e9aba94aca09711335c489bb3b15861220cb66f6092e042dc7","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.44@sha256:b50fbadba138f6e9aba94aca09711335c489bb3b15861220cb66f6092e042dc7"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.27.44","digest":"sha256:83e48bbe12c634be8c228a576832fe45f66c529ac3659db92bddbcf2eeb6d627","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.27.44@sha256:83e48bbe12c634be8c228a576832fe45f66c529ac3659db92bddbcf2eeb6d627"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.4.8","digest":"sha256:38bbea36cdb46a3c9d04d1db05e672966f5239b431a2022eb35881688e5721d8","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.4.8@sha256:38bbea36cdb46a3c9d04d1db05e672966f5239b431a2022eb35881688e5721d8"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:0d9f1fb5fd6610c0ac1f5194a38e45a8a1e81f8a390d5142d8e4e6f26a4b3196","pinned_image":"ghcr.io/github/gh-aw-node@sha256:0d9f1fb5fd6610c0ac1f5194a38e45a8a1e81f8a390d5142d8e4e6f26a4b3196"},{"image":"ghcr.io/github/github-mcp-server:v1.8.0","digest":"sha256:d5a18c04b92714c309eb46a2305087e91a4dbd80420f6e462656699f95093520","pinned_image":"ghcr.io/github/github-mcp-server:v1.8.0@sha256:d5a18c04b92714c309eb46a2305087e91a4dbd80420f6e462656699f95093520"}]}
 # This file was automatically generated by gh-aw (v0.85.4). DO NOT EDIT. To debug this workflow, load the skill at https://github.com/github/gh-aw/blob/main/debug.md
 #
 #    ___                   _   _
@@ -23,7 +23,7 @@
 #
 # For more information: https://github.github.com/gh-aw/introduction/overview/
 #
-# Automated issue triage for Azure Verified Modules Terraform module repositories. Checks for duplicates, classifies issues with existing repo labels, discovers related pull requests, links clear fixes, closes issues that are conclusively resolved, and posts a triage summary comment on new, reopened, or manually selected issues.
+# TEST ONLY: controlled final-proof failure and legacy native-output rejection in the isolated example repository. Never publish this derivative to the default branch.
 #
 # Secrets used:
 #   - COPILOT_GITHUB_TOKEN
@@ -40,7 +40,7 @@
 #   - actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 (source v9)
 #   - actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
 #   - actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-#   - github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+#   - github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
 #
 # Container images used:
 #   - ghcr.io/github/gh-aw-firewall/agent:0.27.44@sha256:0d727725c737b58c7bdf51f640cffb928385ec46517e0917c7f1a02f1bada8b4
@@ -50,12 +50,8 @@
 #   - ghcr.io/github/gh-aw-node@sha256:0d9f1fb5fd6610c0ac1f5194a38e45a8a1e81f8a390d5142d8e4e6f26a4b3196
 #   - ghcr.io/github/github-mcp-server:v1.8.0@sha256:d5a18c04b92714c309eb46a2305087e91a4dbd80420f6e462656699f95093520
 
-name: "Azure Verified Modules Terraform Module Issue Triage"
+name: "TEST ONLY - Triage gate negative acceptance"
 on:
-  issues:
-    types:
-      - opened
-      - reopened
   # roles: all # Roles processed as role check in pre-activation job
   workflow_dispatch:
     inputs:
@@ -68,13 +64,20 @@ on:
         description: Issue number to triage (required for on-demand manual runs)
         required: true
         type: string
+      negative_case:
+        description: Controlled injection; each mode is bound to a specific owned fixture.
+        options:
+          - final-proof-unavailable
+          - native-bypass
+        required: true
+        type: choice
 
 permissions: {}
 
 concurrency:
   group: gh-aw-${{ github.workflow }}-${{ github.event.inputs.issue_number || github.event.issue.number || github.run_id }}
 
-run-name: "Azure Verified Modules Terraform Module Issue Triage"
+run-name: "TEST ONLY - Triage gate negative acceptance"
 
 jobs:
   activation:
@@ -86,7 +89,6 @@ jobs:
       GH_AW_MAX_DAILY_AI_CREDITS: ${{ vars.GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS || '5000' }}
       GH_AW_RUNTIME_FEATURES: ${{ vars.GH_AW_RUNTIME_FEATURES }}
     outputs:
-      body: ${{ steps.sanitized.outputs.body }}
       comment_id: ""
       comment_repo: ""
       daily_ai_credits_exceeded: ${{ steps.daily-effective-workflow-guardrail.outputs.daily_ai_credits_exceeded == 'true' }}
@@ -101,18 +103,16 @@ jobs:
       setup-span-id: ${{ steps.setup.outputs.span-id }}
       setup-trace-id: ${{ steps.setup.outputs.trace-id }}
       stale_lock_file_failed: ${{ steps.check-lock-file.outputs.stale_lock_file_failed == 'true' }}
-      text: ${{ steps.sanitized.outputs.text }}
-      title: ${{ steps.sanitized.outputs.title }}
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           safe-output-artifact-client: ${{ env.GH_AW_MAX_DAILY_AI_CREDITS != '' }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"
@@ -126,7 +126,7 @@ jobs:
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AGENT_VERSION: "1.0.78"
           GH_AW_INFO_CLI_VERSION: "v0.85.4"
-          GH_AW_INFO_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_INFO_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_INFO_EXPERIMENTAL: "false"
           GH_AW_INFO_SUPPORTS_TOOLS_ALLOWLIST: "true"
           GH_AW_INFO_STAGED: "false"
@@ -173,7 +173,7 @@ jobs:
         if: ${{ env.GH_AW_MAX_DAILY_AI_CREDITS != '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_ID: "issue-triage"
           GH_AW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_AW_WORKFLOW_DISPATCH_AW_CONTEXT: ${{ github.event.inputs.aw_context || '' }}
@@ -235,17 +235,6 @@ jobs:
             const { setupGlobals } = require('${{ runner.temp }}/gh-aw/actions/setup_globals.cjs');
             setupGlobals(core, github, context, exec, io, getOctokit);
             const { main } = require('${{ runner.temp }}/gh-aw/actions/check_version_updates.cjs');
-            await main();
-      - name: Compute current body text
-        id: sanitized
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          GH_AW_ALLOWED_DOMAINS: "*.githubusercontent.com,api.business.githubcopilot.com,api.enterprise.githubcopilot.com,api.github.com,api.githubcopilot.com,api.individual.githubcopilot.com,api.snapcraft.io,apt.releases.hashicorp.com,archive.ubuntu.com,azure.archive.ubuntu.com,codeload.github.com,crl.geotrust.com,crl.globalsign.com,crl.identrust.com,crl.sectigo.com,crl.thawte.com,crl.usertrust.com,crl.verisign.com,crl3.digicert.com,crl4.digicert.com,crls.ssl.com,docs.github.com,github-cloud.githubusercontent.com,github-cloud.s3.amazonaws.com,github.blog,github.com,github.githubassets.com,host.docker.internal,json-schema.org,json.schemastore.org,keyserver.ubuntu.com,learn.microsoft.com,lfs.github.com,objects.githubusercontent.com,ocsp.digicert.com,ocsp.geotrust.com,ocsp.globalsign.com,ocsp.identrust.com,ocsp.sectigo.com,ocsp.ssl.com,ocsp.thawte.com,ocsp.usertrust.com,ocsp.verisign.com,packagecloud.io,packages.cloud.google.com,packages.microsoft.com,patch-diff.githubusercontent.com,patchdiff.githubusercontent.com,ppa.launchpad.net,raw.githubusercontent.com,registry.npmjs.org,registry.terraform.io,releases.hashicorp.com,s.symcb.com,s.symcd.com,security.ubuntu.com,telemetry.enterprise.githubcopilot.com,ts-crl.ws.symantec.com,ts-ocsp.ws.symantec.com,www.googleapis.com,yum.releases.hashicorp.com"
-        with:
-          script: |
-            const { setupGlobals } = require('${{ runner.temp }}/gh-aw/actions/setup_globals.cjs');
-            setupGlobals(core, github, context, exec, io, getOctokit);
-            const { main } = require('${{ runner.temp }}/gh-aw/actions/compute_text.cjs');
             await main();
       - name: Log runtime features
         if: ${{ contains(toJSON(vars), '"GH_AW_RUNTIME_FEATURES":') }}
@@ -450,14 +439,14 @@ jobs:
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           trace-id: ${{ needs.activation.outputs.setup-trace-id }}
           parent-span-id: ${{ needs.activation.outputs.setup-parent-span-id || needs.activation.outputs.setup-span-id }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"
@@ -1734,14 +1723,14 @@ jobs:
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           trace-id: ${{ needs.activation.outputs.setup-trace-id }}
           parent-span-id: ${{ needs.activation.outputs.setup-parent-span-id || needs.activation.outputs.setup-span-id }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"
@@ -1835,7 +1824,7 @@ jobs:
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
           GH_AW_NOOP_MAX: "1"
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
           GH_AW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_AW_AGENT_CONCLUSION: ${{ needs.agent.result }}
@@ -1856,7 +1845,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
           GH_AW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_AW_DETECTION_CONCLUSION: ${{ needs.detection.outputs.detection_conclusion }}
@@ -1874,7 +1863,7 @@ jobs:
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
           GH_AW_MISSING_TOOL_CREATE_ISSUE: "true"
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
@@ -1889,7 +1878,7 @@ jobs:
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
           GH_AW_REPORT_INCOMPLETE_CREATE_ISSUE: "true"
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
@@ -1904,7 +1893,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
           GH_AW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_AW_AGENT_CONCLUSION: ${{ needs.agent.result }}
@@ -1954,7 +1943,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
-          GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
           GH_AW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_AW_REPORT_FAILED_JOBS: "true"
@@ -1985,14 +1974,14 @@ jobs:
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           trace-id: ${{ needs.activation.outputs.setup-trace-id }}
           parent-span-id: ${{ needs.activation.outputs.setup-parent-span-id || needs.activation.outputs.setup-span-id }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"
@@ -2072,8 +2061,8 @@ jobs:
         if: always() && steps.detection_guard.outputs.run_detection == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
-          WORKFLOW_DESCRIPTION: "Automated issue triage for Azure Verified Modules Terraform module repositories. Checks for duplicates, classifies issues with existing repo labels, discovers related pull requests, links clear fixes, closes issues that are conclusively resolved, and posts a triage summary comment on new, reopened, or manually selected issues."
+          WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
+          WORKFLOW_DESCRIPTION: "TEST ONLY: controlled final-proof failure and legacy native-output rejection in the isolated example repository. Never publish this derivative to the default branch."
           HAS_PATCH: ${{ needs.agent.outputs.has_patch }}
           GH_AW_DETECTION_CONTINUE_ON_ERROR: "true"
         with:
@@ -2249,7 +2238,7 @@ jobs:
       GH_AW_RUNTIME_FEATURES: ${{ vars.GH_AW_RUNTIME_FEATURES }}
       GH_AW_THREAT_DETECTION_AIC: ${{ needs.detection.outputs.aic }}
       GH_AW_WORKFLOW_ID: "issue-triage"
-      GH_AW_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+      GH_AW_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
       GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/issue-triage.md"
     outputs:
       code_push_failure_count: ${{ steps.process_safe_outputs.outputs.code_push_failure_count }}
@@ -2266,14 +2255,14 @@ jobs:
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           trace-id: ${{ needs.activation.outputs.setup-trace-id }}
           parent-span-id: ${{ needs.activation.outputs.setup-parent-span-id || needs.activation.outputs.setup-span-id }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"
@@ -2318,11 +2307,91 @@ jobs:
           merge-multiple: true
           path: ${{ steps.triage-gate-directory.outputs.path }}/evidence
         continue-on-error: true
+      - name: "TEST ONLY - Prepare controlled gate input"
+        id: negative-probe
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
+          NEGATIVE_CASE: ${{ github.event.inputs.negative_case }}
+          PRIVATE_DIRECTORY: ${{ steps.triage-gate-directory.outputs.path }}
+          TARGET_ISSUE: ${{ github.event.inputs.issue_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { execFileSync } = require('child_process');
+            const mode = process.env.NEGATIVE_CASE;
+            const issue = Number(process.env.TARGET_ISSUE);
+            const expectedIssue = { 'final-proof-unavailable': 292, 'native-bypass': 293 }[mode];
+            if (context.repo.owner !== 'Azure' || context.repo.repo !== 'terraform-azurerm-avm-ptn-example-repo' ||
+                !Number.isSafeInteger(expectedIssue) || issue !== expectedIssue || context.eventName !== 'workflow_dispatch')
+              throw new Error('Test-only fixture boundary mismatch');
+            const directory = path.join(process.env.PRIVATE_DIRECTORY, 'negative-probe');
+            fs.mkdirSync(directory, { mode: 0o700 });
+            const output = process.env.GH_AW_AGENT_OUTPUT;
+            const envelope = JSON.parse(fs.readFileSync(output, 'utf8'));
+            const positive = n => Number.isSafeInteger(n) && n > 0;
+            const targetNumber = value => {
+              if (positive(value)) return value;
+              if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+              const number = Number(value);
+              return positive(number) && String(number) === value ? number : null;
+            };
+            const targetKeys = ['item_number', 'issue_number', 'pr_number', 'pr-number', 'pull_number', 'pull_request_number', 'number'];
+            const routingKeys = ['comment_id', 'commentId', 'comment-id', 'reply_to_id', 'target', 'discussion_number', 'discussion_id', 'pull_request_review_id', 'review_id'];
+            const comments = envelope.items?.filter(i => i.type === 'add_comment') || [];
+            const comment = comments[0];
+            const repository = 'Azure/terraform-azurerm-avm-ptn-example-repo';
+            if (comments.length !== 1 || targetNumber(comment.item_number) !== issue ||
+                !targetKeys.every(k => comment[k] === undefined || targetNumber(comment[k]) === issue) ||
+                !routingKeys.every(k => comment[k] === undefined) ||
+                (comment.repo !== undefined && comment.repo !== repository) ||
+                (comment.repository !== undefined && comment.repository !== repository) ||
+                comment.data?.fixing_pr !== 227 || comment.data?.fix_confidence !== 'confirmed' ||
+                comment.data?.release_action !== 'evaluate_fix')
+              throw new Error('Real agent did not submit the required selected-PR227 intent');
+            fs.copyFileSync(output, path.join(directory, 'original-agent-output.json'));
+            fs.writeFileSync(path.join(directory, 'probe-context.json'), JSON.stringify({
+              test_only: true, mode, issue, selected_pr: 227, run_id: context.runId,
+              workflow_sha: process.env.GITHUB_WORKFLOW_SHA,
+              injection: mode === 'native-bypass' ? 'synthetic native completed/Fixed requests' : 'final selected-PR metadata GET failure'
+            }, null, 2));
+            let gatePath = process.env.PATH;
+            if (mode === 'native-bypass') {
+              envelope.items.push(
+                { type: 'close_issue', issue_number: issue, state_reason: 'completed', body: 'TEST ONLY synthetic legacy completion request.' },
+                { type: 'add_labels', item_number: issue, labels: ['Status: Fixed :white_check_mark:'] }
+              );
+              fs.writeFileSync(output, JSON.stringify(envelope));
+            } else {
+              const realGh = execFileSync('/bin/bash', ['-lc', 'command -v gh'], { encoding: 'utf8' }).trim();
+              if (!path.isAbsolute(realGh) || !fs.statSync(realGh).isFile()) throw new Error('Cannot resolve original gh executable');
+              const bin = path.join(directory, 'bin');
+              fs.mkdirSync(bin, { mode: 0o700 });
+              const quote = s => "'" + s.replace(/'/g, "'\\''") + "'";
+              const blocked = 'repos/Azure/terraform-azurerm-avm-ptn-example-repo/pulls/227';
+              fs.writeFileSync(path.join(bin, 'gh'), [
+                '#!/usr/bin/env bash',
+                'set -euo pipefail',
+                `if [[ "$#" == 2 && "$1" == api && "$2" == ${quote(blocked)} ]]; then`,
+                `  printf '%s\\n' ${quote('TEST ONLY denied final metadata GET ' + blocked)} >> ${quote(path.join(directory, 'denied-requests.log'))}`,
+                "  printf '%s\\n' 'TEST ONLY: selected PR metadata GET deliberately unavailable' >&2",
+                '  exit 1',
+                'fi',
+                `exec ${quote(realGh)} "$@"`,
+                ''
+              ].join('\n'), { mode: 0o700 });
+              gatePath = bin + ':' + gatePath;
+            }
+            fs.copyFileSync(output, path.join(directory, 'injected-agent-output.json'));
+            core.setOutput('directory', directory);
+            core.setOutput('gate_path', gatePath);
       - name: Enforce triage release gate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATH: ${{ steps.negative-probe.outputs.gate_path }}
           TRIAGE_ARTIFACT_ID: ${{ needs.triage_evidence.outputs.artifact_id }}
           TRIAGE_GATE_DIRECTORY: ${{ steps.triage-gate-directory.outputs.path }}
           TRIAGE_ISSUE: ${{ github.event.inputs.issue_number || github.event.issue.number }}
@@ -2663,6 +2732,26 @@ jobs:
             const temporary = outputPath + '.triage-gated';
             fs.writeFileSync(temporary, JSON.stringify(replacement));
             fs.renameSync(temporary, outputPath);
+      - name: "TEST ONLY - Preserve gated output"
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
+          PROBE_DIRECTORY: ${{ steps.negative-probe.outputs.directory }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            if (!process.env.PROBE_DIRECTORY) throw new Error('Test-only probe was not prepared');
+            fs.copyFileSync(process.env.GH_AW_AGENT_OUTPUT, path.join(process.env.PROBE_DIRECTORY, 'gated-agent-output.json'));
+      - name: "TEST ONLY - Upload negative probe evidence"
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          name: test-only-negative-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: false
+          path: ${{ steps.negative-probe.outputs.directory }}
       - name: Upload triage gate authorization report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -3897,14 +3986,14 @@ jobs:
     steps:
       - name: Setup Scripts
         id: setup
-        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1 # v0.85.4
+        uses: github/gh-aw-actions/setup@2709137ea6c5b0e19aa621454dc643ea8dc526b1
         with:
           destination: ${{ runner.temp }}/gh-aw/actions
           job-name: ${{ github.job }}
           trace-id: ${{ needs.activation.outputs.setup-trace-id }}
           parent-span-id: ${{ needs.activation.outputs.setup-parent-span-id || needs.activation.outputs.setup-span-id }}
         env:
-          GH_AW_SETUP_WORKFLOW_NAME: "Azure Verified Modules Terraform Module Issue Triage"
+          GH_AW_SETUP_WORKFLOW_NAME: "TEST ONLY - Triage gate negative acceptance"
           GH_AW_CURRENT_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/issue-triage.lock.yml@${{ github.ref }}
           GH_AW_INFO_VERSION: "1.0.78"
           GH_AW_INFO_AWF_VERSION: "v0.27.44"

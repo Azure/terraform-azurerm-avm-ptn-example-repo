@@ -1,6 +1,7 @@
 ---
+name: TEST ONLY - Triage gate negative acceptance
 description: |
-  Automated issue triage for Azure Verified Modules Terraform module repositories. Checks for duplicates, classifies issues with existing repo labels, discovers related pull requests, links clear fixes, closes issues that are conclusively resolved, and posts a triage summary comment on new, reopened, or manually selected issues.
+  TEST ONLY: controlled final-proof failure and legacy native-output rejection in the isolated example repository. Never publish this derivative to the default branch.
 network:
   allowed:
   - defaults
@@ -8,12 +9,8 @@ network:
   - learn.microsoft.com
   - registry.terraform.io
   - terraform
-# Run on new issues, reopened issues, allow manual reruns
+# Test-only derivative: manual dispatch only.
 "on":
-  issues:
-    types:
-    - opened
-    - reopened
   roles: all
   workflow_dispatch:
     inputs:
@@ -21,6 +18,13 @@ network:
         description: 'Issue number to triage (required for on-demand manual runs)'
         required: true
         type: string
+      negative_case:
+        description: 'Controlled injection; each mode is bound to a specific owned fixture.'
+        required: true
+        type: choice
+        options:
+        - final-proof-unavailable
+        - native-bypass
 # The compiler-generated agent, output and conclusion jobs share a static
 # concurrency group per workflow. `features.group-concurrency-queue: false`
 # below strips `queue: max` from those groups, so Actions applies its default
@@ -100,6 +104,85 @@ safe-outputs:
       artifact-ids: ${{ needs.triage_evidence.outputs.artifact_id }}
       path: ${{ steps.triage-gate-directory.outputs.path }}/evidence
       merge-multiple: true
+  - name: TEST ONLY - Prepare controlled gate input
+    id: negative-probe
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+    env:
+      NEGATIVE_CASE: ${{ github.event.inputs.negative_case }}
+      TARGET_ISSUE: ${{ github.event.inputs.issue_number }}
+      GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
+      PRIVATE_DIRECTORY: ${{ steps.triage-gate-directory.outputs.path }}
+    with:
+      script: |
+        const fs = require('fs');
+        const path = require('path');
+        const { execFileSync } = require('child_process');
+        const mode = process.env.NEGATIVE_CASE;
+        const issue = Number(process.env.TARGET_ISSUE);
+        const expectedIssue = { 'final-proof-unavailable': 292, 'native-bypass': 293 }[mode];
+        if (context.repo.owner !== 'Azure' || context.repo.repo !== 'terraform-azurerm-avm-ptn-example-repo' ||
+            !Number.isSafeInteger(expectedIssue) || issue !== expectedIssue || context.eventName !== 'workflow_dispatch')
+          throw new Error('Test-only fixture boundary mismatch');
+        const directory = path.join(process.env.PRIVATE_DIRECTORY, 'negative-probe');
+        fs.mkdirSync(directory, { mode: 0o700 });
+        const output = process.env.GH_AW_AGENT_OUTPUT;
+        const envelope = JSON.parse(fs.readFileSync(output, 'utf8'));
+        const positive = n => Number.isSafeInteger(n) && n > 0;
+        const targetNumber = value => {
+          if (positive(value)) return value;
+          if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+          const number = Number(value);
+          return positive(number) && String(number) === value ? number : null;
+        };
+        const targetKeys = ['item_number', 'issue_number', 'pr_number', 'pr-number', 'pull_number', 'pull_request_number', 'number'];
+        const routingKeys = ['comment_id', 'commentId', 'comment-id', 'reply_to_id', 'target', 'discussion_number', 'discussion_id', 'pull_request_review_id', 'review_id'];
+        const comments = envelope.items?.filter(i => i.type === 'add_comment') || [];
+        const comment = comments[0];
+        const repository = 'Azure/terraform-azurerm-avm-ptn-example-repo';
+        if (comments.length !== 1 || targetNumber(comment.item_number) !== issue ||
+            !targetKeys.every(k => comment[k] === undefined || targetNumber(comment[k]) === issue) ||
+            !routingKeys.every(k => comment[k] === undefined) ||
+            (comment.repo !== undefined && comment.repo !== repository) ||
+            (comment.repository !== undefined && comment.repository !== repository) ||
+            comment.data?.fixing_pr !== 227 || comment.data?.fix_confidence !== 'confirmed' ||
+            comment.data?.release_action !== 'evaluate_fix')
+          throw new Error('Real agent did not submit the required selected-PR227 intent');
+        fs.copyFileSync(output, path.join(directory, 'original-agent-output.json'));
+        fs.writeFileSync(path.join(directory, 'probe-context.json'), JSON.stringify({
+          test_only: true, mode, issue, selected_pr: 227, run_id: context.runId,
+          workflow_sha: process.env.GITHUB_WORKFLOW_SHA,
+          injection: mode === 'native-bypass' ? 'synthetic native completed/Fixed requests' : 'final selected-PR metadata GET failure'
+        }, null, 2));
+        let gatePath = process.env.PATH;
+        if (mode === 'native-bypass') {
+          envelope.items.push(
+            { type: 'close_issue', issue_number: issue, state_reason: 'completed', body: 'TEST ONLY synthetic legacy completion request.' },
+            { type: 'add_labels', item_number: issue, labels: ['Status: Fixed :white_check_mark:'] }
+          );
+          fs.writeFileSync(output, JSON.stringify(envelope));
+        } else {
+          const realGh = execFileSync('/bin/bash', ['-lc', 'command -v gh'], { encoding: 'utf8' }).trim();
+          if (!path.isAbsolute(realGh) || !fs.statSync(realGh).isFile()) throw new Error('Cannot resolve original gh executable');
+          const bin = path.join(directory, 'bin');
+          fs.mkdirSync(bin, { mode: 0o700 });
+          const quote = s => "'" + s.replace(/'/g, "'\\''") + "'";
+          const blocked = 'repos/Azure/terraform-azurerm-avm-ptn-example-repo/pulls/227';
+          fs.writeFileSync(path.join(bin, 'gh'), [
+            '#!/usr/bin/env bash',
+            'set -euo pipefail',
+            `if [[ "$#" == 2 && "$1" == api && "$2" == ${quote(blocked)} ]]; then`,
+            `  printf '%s\\n' ${quote('TEST ONLY denied final metadata GET ' + blocked)} >> ${quote(path.join(directory, 'denied-requests.log'))}`,
+            "  printf '%s\\n' 'TEST ONLY: selected PR metadata GET deliberately unavailable' >&2",
+            '  exit 1',
+            'fi',
+            `exec ${quote(realGh)} "$@"`,
+            ''
+          ].join('\n'), { mode: 0o700 });
+          gatePath = bin + ':' + gatePath;
+        }
+        fs.copyFileSync(output, path.join(directory, 'injected-agent-output.json'));
+        core.setOutput('directory', directory);
+        core.setOutput('gate_path', gatePath);
   - name: Enforce triage release gate
     uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
     env:
@@ -112,6 +195,7 @@ safe-outputs:
       TRIAGE_ISSUE: ${{ github.event.inputs.issue_number || github.event.issue.number }}
       TRIAGE_WORKFLOW_SHA: ${{ github.workflow_sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PATH: ${{ steps.negative-probe.outputs.gate_path }}
     with:
       script: |
         // This code runs on the trusted output runner, not inside the agent.
@@ -445,6 +529,26 @@ safe-outputs:
         const temporary = outputPath + '.triage-gated';
         fs.writeFileSync(temporary, JSON.stringify(replacement));
         fs.renameSync(temporary, outputPath);
+  - name: TEST ONLY - Preserve gated output
+    if: always()
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+    env:
+      GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
+      PROBE_DIRECTORY: ${{ steps.negative-probe.outputs.directory }}
+    with:
+      script: |
+        const fs = require('fs');
+        const path = require('path');
+        if (!process.env.PROBE_DIRECTORY) throw new Error('Test-only probe was not prepared');
+        fs.copyFileSync(process.env.GH_AW_AGENT_OUTPUT, path.join(process.env.PROBE_DIRECTORY, 'gated-agent-output.json'));
+  - name: TEST ONLY - Upload negative probe evidence
+    if: always()
+    uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+    with:
+      name: test-only-negative-probe-${{ github.run_id }}-${{ github.run_attempt }}
+      path: ${{ steps.negative-probe.outputs.directory }}
+      if-no-files-found: error
+      overwrite: false
   - name: Upload triage gate authorization report
     uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
     with:
