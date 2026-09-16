@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Azure/azure-verified-modules-tools/main/src/Avm.Authoring/Resources/Schemas/v1/avm-module-metadata.schema.json",
+  "moduleDescription": "This repository serves as a test sandbox for the Azure Verified Modules (AVM) team to exercise the module tooling, governance checks, etc.",
+  "moduleDisplayName": "Example Repository for Testing",
+  "canonicalType": "example/repo",
+  "telemetryIdPrefix": "46d3xtrf.ptn.example-repo",
+  "owners": [
+    "jaredfholgate"
+  ]
+}
