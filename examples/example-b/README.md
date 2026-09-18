@@ -26,7 +26,8 @@ module "regions" {
   source  = "Azure/avm-utl-regions/azurerm"
   version = "0.9.0"
 
-  is_recommended = true
+  enable_telemetry = var.enable_telemetry
+  is_recommended   = true
 }
 
 # This allows us to randomize the region for the resource group.
@@ -96,7 +97,7 @@ If it is set to false, then no telemetry will be collected.
 
 Type: `bool`
 
-Default: `true`
+Default: `false`
 
 ## Outputs
 

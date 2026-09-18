@@ -3,3 +3,5 @@
 
 * @Azure/azure-verified-modules-engineering-owners
 .github/CODEOWNERS @Azure/azure-verified-modules-engineering-owners
+
+metadata.json @Azure/azure-verified-modules-engineering-owners @Azure/azure-verified-modules-module-owners

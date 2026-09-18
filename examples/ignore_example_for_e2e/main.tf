@@ -18,6 +18,8 @@ terraform {
 module "regions" {
   source  = "Azure/avm-utl-regions/azurerm"
   version = "0.9.0"
+
+  enable_telemetry = var.enable_telemetry
 }
 
 # This allows us to randomize the region for the resource group.
