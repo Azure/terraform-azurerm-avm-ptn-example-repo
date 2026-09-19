@@ -1,6 +1,12 @@
 variable "address_space" {
   type        = list(string)
   description = "The address space that is used by the virtual network."
+  nullable    = false
+
+  validation {
+    condition     = length(var.address_space) > 0
+    error_message = "The address_space must contain at least one address prefix."
+  }
 }
 
 variable "location" {
