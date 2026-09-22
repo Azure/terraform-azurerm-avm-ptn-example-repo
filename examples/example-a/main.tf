@@ -52,4 +52,8 @@ module "test" {
   name             = "rg-test"
   parent_id        = azapi_resource.this.id
   enable_telemetry = var.enable_telemetry
+  tags = {
+    environment = "test"
+    example     = "example-a"
+  }
 }
