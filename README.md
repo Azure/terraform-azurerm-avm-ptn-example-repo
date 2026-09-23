@@ -235,6 +235,10 @@ The following outputs are exported:
 
 Description: Resource name.
 
+### <a name="output_requested_address_space"></a> [requested\_address\_space](#output\_requested\_address\_space)
+
+Description: The virtual network address space requested by the caller. This value is taken directly from the configured input and does not represent values normalized or read back from Azure.
+
 ### <a name="output_resource_id"></a> [resource\_id](#output\_resource\_id)
 
 Description: Resource ID.
