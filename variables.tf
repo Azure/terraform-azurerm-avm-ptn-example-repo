@@ -7,6 +7,11 @@ variable "location" {
   type        = string
   description = "Azure region where the resource should be deployed."
   nullable    = false
+
+  validation {
+    condition     = length(trimspace(var.location)) > 0
+    error_message = "The location must not be empty or whitespace."
+  }
 }
 
 variable "name" {
