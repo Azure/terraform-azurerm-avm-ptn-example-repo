@@ -6,7 +6,7 @@ resource "azapi_resource" "this" {
   body = {
     properties = {
       addressSpace = {
-        addressPrefixes = var.address_space
+        addressPrefixes = distinct(var.address_space)
       }
     }
   }
