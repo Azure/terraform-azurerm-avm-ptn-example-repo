@@ -18,6 +18,11 @@ variable "parent_id" {
   type        = string
   description = "The Azure Resource ID of the parent resource (typically the resource group ID) where the resource will be deployed."
   nullable    = false
+
+  validation {
+    condition     = can(provider::azapi::parse_resource_id("Microsoft.Resources/resourceGroups", var.parent_id))
+    error_message = "The parent_id must be a valid resource group resource ID."
+  }
 }
 
 variable "enable_telemetry" {
