@@ -54,11 +54,12 @@ resource "azapi_resource" "this" {
 module "test" {
   source = "../../"
 
-  address_space    = ["10.0.0.0/16"]
-  location         = azapi_resource.this.location
-  name             = module.naming.virtual_network.name_unique
-  parent_id        = azapi_resource.this.id
-  enable_telemetry = var.enable_telemetry
+  address_space           = ["10.0.0.0/16"]
+  location                = azapi_resource.this.location
+  name                    = module.naming.virtual_network.name_unique
+  parent_id               = azapi_resource.this.id
+  enable_telemetry        = var.enable_telemetry
+  flow_timeout_in_minutes = 10
 }
 ```
 

@@ -4,11 +4,15 @@ resource "azapi_resource" "this" {
   parent_id = var.parent_id
   type      = var.resource_types.network_virtual_networks
   body = {
-    properties = {
+    properties = merge({
       addressSpace = {
         addressPrefixes = distinct(var.address_space)
       }
-    }
+      },
+      var.flow_timeout_in_minutes == null ? {} : {
+        flowTimeoutInMinutes = var.flow_timeout_in_minutes
+      }
+    )
   }
   ignore_body_changes    = length(var.ignore_body_changes.network_virtual_networks) > 0 ? var.ignore_body_changes.network_virtual_networks : null
   response_export_values = []

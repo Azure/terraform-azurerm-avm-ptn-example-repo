@@ -87,6 +87,14 @@ Type: `bool`
 
 Default: `true`
 
+### <a name="input_flow_timeout_in_minutes"></a> [flow\_timeout\_in\_minutes](#input\_flow\_timeout\_in\_minutes)
+
+Description: The flow timeout in minutes for the virtual network. Valid values are between 4 and 30.
+
+Type: `number`
+
+Default: `null`
+
 ### <a name="input_ignore_body_changes"></a> [ignore\_body\_changes](#input\_ignore\_body\_changes)
 
 Description: Paths in each resource's `body` whose changes the AzAPI provider ignores. Prefer Terraform's `lifecycle.ignore_changes` when the paths are static; use this variable when the paths must be derived from variables or other non-static values.
