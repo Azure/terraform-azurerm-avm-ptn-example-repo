@@ -6,7 +6,7 @@ resource "azapi_resource" "this" {
   body = {
     properties = merge({
       addressSpace = {
-        addressPrefixes = var.address_space
+        addressPrefixes = distinct(var.address_space)
       }
       },
       var.flow_timeout_in_minutes == null ? {} : {

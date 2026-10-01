@@ -1,12 +1,23 @@
 variable "address_space" {
   type        = list(string)
   description = "The address space that is used by the virtual network."
+  nullable    = false
+
+  validation {
+    condition     = length(var.address_space) > 0
+    error_message = "The address_space must contain at least one address prefix."
+  }
 }
 
 variable "location" {
   type        = string
   description = "Azure region where the resource should be deployed."
   nullable    = false
+
+  validation {
+    condition     = length(trimspace(var.location)) > 0
+    error_message = "The location must not be empty or whitespace."
+  }
 }
 
 variable "name" {
@@ -18,6 +29,11 @@ variable "parent_id" {
   type        = string
   description = "The Azure Resource ID of the parent resource (typically the resource group ID) where the resource will be deployed."
   nullable    = false
+
+  validation {
+    condition     = can(provider::azapi::parse_resource_id("Microsoft.Resources/resourceGroups", var.parent_id))
+    error_message = "The parent_id must be a valid resource group resource ID."
+  }
 }
 
 variable "enable_telemetry" {
