@@ -1187,6 +1187,7 @@ steps:
        latest_published_at:$published, reason:null, prs:.}
     ' "${RESULTS}" > "${OUT}"
 tools:
+  bash: true
   cache-memory: true
   github:
     min-integrity: none
