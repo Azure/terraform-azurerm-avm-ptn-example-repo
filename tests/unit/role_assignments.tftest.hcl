@@ -6,8 +6,13 @@ mock_provider "azapi" {
       id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-unit-test/providers/Microsoft.Network/virtualNetworks/vnet-unit-test"
     }
   }
+  mock_data "azapi_client_config" {
+    defaults = {
+      subscription_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000"
+    }
+  }
 }
-mock_provider "modtm" {}
+
 mock_provider "random" {}
 
 variables {
@@ -54,6 +59,10 @@ run "uses_a_fully_qualified_role_definition_id_verbatim" {
     condition     = azapi_resource.role_assignment["reader"].type == var.resource_types.authorization_role_assignments
     error_message = "Role assignments must use the configured resource type."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "ignores_null_optional_role_assignment_properties" {
@@ -71,6 +80,10 @@ run "ignores_null_optional_role_assignment_properties" {
   assert {
     condition     = azapi_resource.role_assignment["reader"].ignore_null_property
     error_message = "Null optional properties from the interfaces utility module must not be sent to Azure."
+  }
+  providers = {
+    azapi  = azapi
+    random = random
   }
 }
 
@@ -116,6 +129,10 @@ run "forwards_optional_role_assignment_properties_when_set" {
     condition     = azapi_resource.role_assignment["contributor"].name == "33333333-3333-3333-3333-333333333333"
     error_message = "A supplied role assignment name must override the generated UUID."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "rejects_an_invalid_delegated_managed_identity_resource_id" {
@@ -132,6 +149,10 @@ run "rejects_an_invalid_delegated_managed_identity_resource_id" {
   }
 
   expect_failures = [var.role_assignments]
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "creates_one_role_assignment_per_map_entry" {
@@ -159,6 +180,10 @@ run "creates_one_role_assignment_per_map_entry" {
     condition     = azapi_resource.role_assignment["reader"].name != azapi_resource.role_assignment["contributor"].name
     error_message = "Each role assignment must get a distinct deterministic name."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "rejects_a_principal_id_that_is_not_a_guid" {
@@ -174,4 +199,8 @@ run "rejects_a_principal_id_that_is_not_a_guid" {
   }
 
   expect_failures = [var.role_assignments]
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
