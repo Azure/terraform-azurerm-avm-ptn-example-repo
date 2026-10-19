@@ -1,5 +1,11 @@
-mock_provider "azapi" {}
-mock_provider "modtm" {}
+mock_provider "azapi" {
+  mock_data "azapi_client_config" {
+    defaults = {
+      subscription_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000"
+    }
+  }
+}
+
 mock_provider "random" {}
 
 variables {
@@ -38,6 +44,10 @@ run "derives_the_lock_name_from_the_kind_when_none_is_supplied" {
     condition     = azapi_resource.lock[0].type == var.resource_types.authorization_locks
     error_message = "The lock resource must use the configured resource type."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "honours_an_explicit_lock_name" {
@@ -59,6 +69,10 @@ run "honours_an_explicit_lock_name" {
     condition     = azapi_resource.lock[0].body.properties.notes == "Cannot delete or modify the resource or its child resources."
     error_message = "A ReadOnly lock must carry the modify-scoped note."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "honours_explicit_lock_notes" {
@@ -75,6 +89,10 @@ run "honours_explicit_lock_notes" {
     condition     = azapi_resource.lock[0].body.properties.notes == "Managed by the platform team."
     error_message = "Explicit lock notes must override the generated default."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "rejects_an_unsupported_lock_kind" {
@@ -87,4 +105,8 @@ run "rejects_an_unsupported_lock_kind" {
   }
 
   expect_failures = [var.lock]
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }

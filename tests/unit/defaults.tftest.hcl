@@ -1,5 +1,11 @@
-mock_provider "azapi" {}
-mock_provider "modtm" {}
+mock_provider "azapi" {
+  mock_data "azapi_client_config" {
+    defaults = {
+      subscription_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000"
+    }
+  }
+}
+
 mock_provider "random" {}
 
 variables {
@@ -32,6 +38,10 @@ run "creates_a_virtual_network_from_the_required_inputs" {
     condition     = azapi_resource.this.location == var.location
     error_message = "The resource must be deployed to var.location."
   }
+  providers = {
+    azapi  = azapi
+    random = random
+  }
 }
 
 run "passes_every_address_prefix_through_to_the_request_body" {
@@ -40,6 +50,10 @@ run "passes_every_address_prefix_through_to_the_request_body" {
   assert {
     condition     = azapi_resource.this.body.properties.addressSpace.addressPrefixes == var.address_space
     error_message = "All address prefixes must be forwarded to the virtual network body."
+  }
+  providers = {
+    azapi  = azapi
+    random = random
   }
 }
 
@@ -54,6 +68,10 @@ run "creates_no_optional_resources_by_default" {
   assert {
     condition     = length(azapi_resource.role_assignment) == 0
     error_message = "No role assignments must be created when var.role_assignments is empty."
+  }
+  providers = {
+    azapi  = azapi
+    random = random
   }
 }
 
@@ -70,5 +88,9 @@ run "applies_tags_when_supplied" {
   assert {
     condition     = azapi_resource.this.tags == var.tags
     error_message = "Tags must be forwarded to the virtual network."
+  }
+  providers = {
+    azapi  = azapi
+    random = random
   }
 }
