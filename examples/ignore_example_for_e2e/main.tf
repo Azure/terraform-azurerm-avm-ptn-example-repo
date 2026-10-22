@@ -48,9 +48,6 @@ resource "azapi_resource" "this" {
 # This is the module call.
 module "test" {
   source = "../../"
-  providers = {
-    azapi = azapi
-  }
 
   address_space = ["10.0.0.0/16"]
   # source             = "Azure/avm-<res/ptn>-<name>/azurerm"

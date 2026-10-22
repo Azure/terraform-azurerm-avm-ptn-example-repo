@@ -47,9 +47,6 @@ resource "azapi_resource" "this" {
 
 module "test" {
   source = "../../"
-  providers = {
-    azapi = azapi
-  }
 
   address_space    = ["10.0.0.0/16"]
   location         = azapi_resource.this.location
