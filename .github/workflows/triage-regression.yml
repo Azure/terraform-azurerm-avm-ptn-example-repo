@@ -1,0 +1,102 @@
+name: Issue Triage Regression Suite
+
+# Deliberately not a managed file. It lives only in this repository, which is
+# the sandbox the suite stages its fixtures in. Adding it to managed-files
+# would fan it out to every AVM module repository, where a workflow that opens
+# and closes issues has no business running.
+#
+# The suite itself is versioned in azure-verified-modules-managed-files next to
+# the triage prompt it tests, and is fetched at run time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite_ref:
+        description: Branch or tag of azure-verified-modules-managed-files to take the suite from
+        required: false
+        default: main
+        type: string
+      cases:
+        description: Comma-separated case ids. Leave empty to run every case.
+        required: false
+        type: string
+      keep_fixtures:
+        description: Leave staged issues open instead of retiring them
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read # read releases and compare them against the default branch
+  issues: write # create, scrub, close and lock fixtures
+  actions: write # dispatch triage runs and download their artifacts
+
+concurrency:
+  group: issue-triage-regression
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    name: Run the suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Fetch the suite
+        env:
+          SUITE_REF: ${{ inputs.suite_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p suite
+          BASE="https://raw.githubusercontent.com/Azure/azure-verified-modules-managed-files/${SUITE_REF}/scripts"
+          curl -fsSL "${BASE}/Test-IssueTriageRegression.ps1" -o suite/Test-IssueTriageRegression.ps1
+          curl -fsSL "${BASE}/issue-triage-regression-cases.json" -o suite/issue-triage-regression-cases.json
+
+      - name: Resolve the managed-files version under test
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Extracted with grep rather than jq: the version file has been seen
+          # with an unterminated string, which any real JSON parser rejects.
+          VERSION=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.avm/managed-files-version.json" --jq '.content' \
+            | tr -d '\n' | base64 -d \
+            | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' \
+            | head -n 1 \
+            | sed -E 's/.*"([^"]+)"$/\1/' || true)
+          echo "value=${VERSION:-unknown}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run the regression suite
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUITE_REPOSITORY: ${{ github.repository }}
+          SUITE_VERSION: ${{ steps.version.outputs.value }}
+          SUITE_CASES: ${{ inputs.cases }}
+          SUITE_KEEP_FIXTURES: ${{ inputs.keep_fixtures }}
+        run: |
+          # Inputs are read from the environment rather than interpolated into
+          # this script, so nothing a dispatcher types can become code.
+          $arguments = @(
+              '-Repository', $env:SUITE_REPOSITORY
+              '-Version', $env:SUITE_VERSION
+              # Actions raises no issue events for its own GITHUB_TOKEN, so a
+              # staged issue would never be triaged. workflow_dispatch is exempt
+              # from that rule, which is what -Dispatch uses.
+              '-Dispatch'
+          )
+
+          if ($env:SUITE_CASES) {
+              $selected = @($env:SUITE_CASES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+              if ($selected.Count -gt 0) {
+                  $arguments += '-Id'
+                  $arguments += $selected
+              }
+          }
+
+          if ($env:SUITE_KEEP_FIXTURES -eq 'true') {
+              $arguments += '-KeepFixtures'
+          }
+
+          ./suite/Test-IssueTriageRegression.ps1 @arguments
