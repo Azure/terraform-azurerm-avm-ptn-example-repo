@@ -1,5 +1,6 @@
 variables {
   enable_telemetry = false
+  location         = "eastus2"
 }
 
 run "setup" {
